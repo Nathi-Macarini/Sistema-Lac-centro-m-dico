@@ -5,6 +5,8 @@ if (!isset($_SESSION['usuario_id'])) {
     exit;
 }
 
+$tipoUsuario = $_SESSION['tipo_usuario'] ?? 'comum';
+
 $conn = new mysqli('localhost', 'root', '', 'lac_centro_medico');
 
 // Processar o agendamento se o formulário for enviado
@@ -50,8 +52,20 @@ $consultas = $conn->query("SELECT * FROM consultas WHERE usuario_id = '$uid' ORD
                 <a href="#" class="hover:text-[#8C6D36] transition">Dependentes</a>
             </nav>
             <div class="flex items-center space-x-4">
-                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo $_SESSION['nome_usuario']; ?></span>
-                <a href="login.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair"><i class="fa-solid fa-right-from-bracket text-lg"></i></a>
+                <!-- Botão EXCLUSIVO do Admin no cabeçalho -->
+                <?php if ($tipoUsuario === 'admin'): ?>
+                    <a href="admin/dashboard.php"
+                       class="hidden sm:flex items-center gap-2 bg-[#F9F4EC] text-[#8C6D36] border border-[#E6D5B8] px-3.5 py-2 rounded-xl text-sm font-semibold hover:bg-[#E6D5B8]/50 transition">
+                        <i class="fa-solid fa-shield-halved"></i> Painel Admin
+                    </a>
+                <?php endif; ?>
+
+                <a href="perfil.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition hidden sm:inline" title="Meu Perfil">
+                    <?php echo htmlspecialchars($_SESSION['nome_usuario']); ?>
+                </a>
+                <a href="logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
+                </a>
             </div>
         </div>
     </header>
