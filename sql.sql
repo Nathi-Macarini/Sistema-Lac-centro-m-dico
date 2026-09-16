@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS tokens_recuperacao (
 
 -- Administrador (acesso ao Painel Admin)
 INSERT INTO usuarios (nome, email, cpf, senha, tipo) VALUES
-('Administrador', 'testeadm@gmail.com', '00000000000', '123456', 'admin');
+('testeadm', 'testeadm@gmail.com', '00000000000', '123456', 'admin');
 
 -- Usuário comum (paciente de teste)
 INSERT INTO usuarios (nome, email, cpf, senha, tipo) VALUES
-('João Carlos Zanetti', 'joao@email.com', '11111111111', '123456', 'comum');
+('testecomum', 'testecomum@gmail.com', '11111111111', '123456', 'comum');
