@@ -45,6 +45,13 @@ Plataforma web para gestão de atendimentos médicos, teleconsultas e cadastro d
         <sub><b>Nathi-Macarini</b></sub>
       </a>
     </td>
+    <td align="center">
+      <a href="https://github.com/Danilo-bit311">
+        <img src="https://avatars.githubusercontent.com/Danilo-bit311" width="100px;" alt=""/>
+        <br />
+        <sub><b>Danilo-bit311</b></sub>
+      </a>
+    </td>
   </tr>
 </table>
 
