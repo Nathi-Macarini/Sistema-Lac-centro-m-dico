@@ -1,13 +1,7 @@
 {
-    "name": "seu-nome/seu-projeto",
-    "description": "Sistema médico",
-    "type": "project",
-    "require": {
-        "php": ">=7.4"
-    },
-    "autoload": {
-        "psr-4": {
-            "App\\": "src/"
-        }
-    }
+  "name": "lac/centro-medico",
+  "description": "Sistema LAC Centro Médico",
+  "require": {
+    "php": ">=8.1"
+  }
 }

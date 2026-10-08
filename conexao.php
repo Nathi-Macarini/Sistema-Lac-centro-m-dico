@@ -1,15 +1,21 @@
 <?php
-require_once __DIR__ . '/bootstrap.php'; 
+require_once __DIR__ . '/bootstrap.php';
+
 // ============================================================
 // Conexão e funções compartilhadas (admin, médico, teleconsulta)
 // ============================================================
-$servidor   = "localhost";
-$usuario_db = "root";
-$senha_db   = "";
-$banco      = "lac_centro_medico";
+// Lê das variáveis de ambiente (Vercel, Railway, etc)
+// Se não existirem, usa os padrões do XAMPP local
+// ============================================================
+
+$servidor   = getenv('DB_HOST') ?: 'localhost';
+$usuario_db = getenv('DB_USER') ?: 'root';
+$senha_db   = getenv('DB_PASS') ?: '';
+$banco      = getenv('DB_NAME') ?: 'lac_centro_medico';
+$porta      = (int)(getenv('DB_PORT') ?: 3306);
 
 mysqli_report(MYSQLI_REPORT_OFF);
-$conn = new mysqli($servidor, $usuario_db, $senha_db, $banco);
+$conn = new mysqli($servidor, $usuario_db, $senha_db, $banco, $porta);
 
 if ($conn->connect_error) {
     die("Erro de conexão: " . $conn->connect_error);
@@ -130,8 +136,5 @@ function verificarEsquema($conn) {
 
 // ---------------- Pronto atendimento ----------------
 
-// Quanto tempo (em horas) uma solicitação de pronto atendimento continua na fila
 const PA_VALIDADE_HORAS = 3;
-
-// Especialidades atendidas no pronto atendimento
 const PA_ESPECIALIDADES = ['Clínica Geral', 'Pediatria'];
