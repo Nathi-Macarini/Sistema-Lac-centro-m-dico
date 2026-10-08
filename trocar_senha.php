@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/bootstrap.php'; 
 if (!isset($_SESSION['usuario_id'])) { header("Location: login.php"); exit; }
 
 $conn = new mysqli('localhost', 'root', '', 'lac_centro_medico');

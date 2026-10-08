@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../bootstrap.php';
 if (!isset($_SESSION['usuario_id']) || $_SESSION['tipo_usuario'] !== 'admin') {
     header("Location: ../login.php");
     exit;
@@ -39,21 +39,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             // Primeira senha = CPF (se não tiver CPF, usa padrão)
             $senhaInicial = $cpf !== '' ? $cpf : '123456';
+$senhaHash = password_hash($senhaInicial, PASSWORD_DEFAULT);   // 👈 GERA HASH
 
-            $emailEsc = $email !== '' ? "'" . $conn->real_escape_string($email) . "'" : "NULL";
-            $cpfEsc   = $cpf !== ''   ? "'" . $conn->real_escape_string($cpf) . "'"   : "NULL";
+$emailEsc  = $email !== '' ? "'" . $conn->real_escape_string($email) . "'" : "NULL";
+$cpfEsc    = $cpf   !== '' ? "'" . $conn->real_escape_string($cpf)   . "'" : "NULL";
+$senhaEsc  = "'" . $conn->real_escape_string($senhaHash) . "'";       // 👈 salva o hash
 
-            $sql = "INSERT INTO usuarios (nome, email, cpf, senha, telefone, data_nascimento, endereco, tipo)
-                    VALUES (
-                        '" . $conn->real_escape_string($nome) . "',
-                        $emailEsc,
-                        $cpfEsc,
-                        '" . $conn->real_escape_string($senhaInicial) . "',
-                        '" . $conn->real_escape_string($telefone) . "',
-                        '" . $conn->real_escape_string($nasc) . "',
-                        '" . $conn->real_escape_string($endereco) . "',
-                        'comum'
-                    )";
+$sql = "INSERT INTO usuarios (nome, email, cpf, senha, telefone, data_nascimento, endereco, tipo)
+        VALUES (
+            '" . $conn->real_escape_string($nome) . "',
+            $emailEsc,
+            $cpfEsc,
+            $senhaEsc,                                                -- 👈 hash aqui
+            '" . $conn->real_escape_string($telefone) . "',
+            '" . $conn->real_escape_string($nasc) . "',
+            '" . $conn->real_escape_string($endereco) . "',
+            'comum'
+        )";
 
             if ($conn->query($sql)) {
                 $msg = "Usuário cadastrado com sucesso! Senha inicial: <strong>" . htmlspecialchars($senhaInicial) . "</strong>";
@@ -78,7 +80,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-            <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
+            <div class="flex items-center space-x-3">
+                <img src="../logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
+                <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
+                    Painel Administrativo
+                </span>
+            </div>
             <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
                 <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
             </a>

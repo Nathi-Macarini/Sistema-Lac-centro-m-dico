@@ -1,45 +1,98 @@
 <?php
-session_start();
-require __DIR__ . '/../conexao.php';
+require_once __DIR__ . '/../bootstrap.php';
+require_once __DIR__ . '/../conexao.php';
 
+// ============================================================
+// 1. AUTENTICAÇÃO
+// ============================================================
 if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'admin') {
     header("Location: ../login.php");
     exit;
 }
 
+// ============================================================
+// 2. PEGA O ID (ANTES DE QUALQUER POST)
+// ============================================================
 $id = (int)($_GET['id'] ?? 0);
+if ($id <= 0) {
+    header("Location: listar_usuarios.php");
+    exit;
+}
+
+// ============================================================
+// 3. BUSCA O USUÁRIO
+// ============================================================
 $st = $conn->prepare("SELECT id, nome, email, cpf, telefone, data_nascimento, endereco, tipo FROM usuarios WHERE id = ?");
 $st->bind_param("i", $id);
 $st->execute();
 $u = $st->get_result()->fetch_assoc();
-if (!$u) { header("Location: listar_usuarios.php"); exit; }
 
+if (!$u) {
+    header("Location: listar_usuarios.php");
+    exit;
+}
+
+// ============================================================
+// 4. VARIÁVEIS DE ESTADO
+// ============================================================
 $erro = '';
 $avisoRedefinicao = '';
 $avisoPlano = '';
 $avisoDependente = '';
 
-// Quantos admins existem?
+// Controle de admin único
 $qAdmins = $conn->query("SELECT COUNT(*) AS n FROM usuarios WHERE tipo = 'admin'");
 $totalAdmins = (int)$qAdmins->fetch_assoc()['n'];
 $ehUltimoAdmin = ($u['tipo'] === 'admin' && $totalAdmins <= 1);
 
-// ---------- Redefinir senha para o CPF ----------
+// ============================================================
+// 5. AÇÃO: REDEFINIR SENHA (HASH BCRYPT)
+// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefinir_senha') {
     $cpfLimpo = preg_replace('/\D/', '', (string)$u['cpf']);
+
     if ($cpfLimpo === '') {
         $erro = "Este usuário não tem CPF cadastrado. Não é possível redefinir a senha para o CPF.";
     } else {
-        $novaEsc = $conn->real_escape_string($cpfLimpo);
-        if ($conn->query("UPDATE usuarios SET senha = '$novaEsc' WHERE id = $id")) {
-            $avisoRedefinicao = "Senha redefinida para o CPF do usuário (somente números). Avise-o para trocar no primeiro acesso.";
+        $senhaHash = password_hash($cpfLimpo, PASSWORD_DEFAULT);
+
+        $up = $conn->prepare("UPDATE usuarios SET senha = ? WHERE id = ?");
+        if (!$up) {
+            $erro = "Erro interno: " . $conn->error;
         } else {
-            $erro = "Erro ao redefinir senha: " . $conn->error;
+            $up->bind_param("si", $senhaHash, $id);
+
+            if ($up->execute()) {
+                if ($up->affected_rows > 0) {
+                    $avisoRedefinicao = "Senha redefinida com sucesso. A nova senha é o CPF do usuário (somente números). Oriente-o a trocar no primeiro acesso.";
+
+                    // Log de auditoria
+                    if (class_exists('App\\ActivityLogger')) {
+                        \App\ActivityLogger::log(
+                            action: 'senha_redefinida',
+                            entity: 'usuario',
+                            entityId: $id,
+                            description: "Admin redefiniu a senha do usuário {$u['nome']}",
+                            metadata: [
+                                'usuario_id'   => $id,
+                                'usuario_nome' => $u['nome'],
+                            ],
+                            tags: ['usuario', 'senha']
+                        );
+                    }
+                } else {
+                    $erro = "Nada foi alterado. Verifique se o usuário existe.";
+                }
+            } else {
+                $erro = "Erro ao redefinir senha: " . $up->error;
+            }
         }
     }
 }
 
-// ---------- Salvar edição ----------
+// ============================================================
+// 6. AÇÃO: SALVAR EDIÇÃO DOS DADOS
+// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar') {
     $nome     = trim($_POST['nome'] ?? '');
     $email    = trim($_POST['email'] ?? '');
@@ -57,15 +110,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
     } elseif ($ehUltimoAdmin && $tipo !== 'admin') {
         $erro = "Este é o único administrador. Não é possível rebaixá-lo para comum.";
     } else {
+        // Verifica duplicidade
         $dup = false;
         if ($email !== '') {
             $q = $conn->prepare("SELECT id FROM usuarios WHERE email = ? AND id <> ?");
-            $q->bind_param("si", $email, $id); $q->execute();
+            $q->bind_param("si", $email, $id);
+            $q->execute();
             if ($q->get_result()->fetch_assoc()) $dup = true;
         }
         if (!$dup && $cpf !== '') {
             $q = $conn->prepare("SELECT id FROM usuarios WHERE cpf = ? AND id <> ?");
-            $q->bind_param("si", $cpf, $id); $q->execute();
+            $q->bind_param("si", $cpf, $id);
+            $q->execute();
             if ($q->get_result()->fetch_assoc()) $dup = true;
         }
 
@@ -76,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
             $cpfEsc   = $cpf !== ''   ? $cpf   : null;
             $nascEsc  = $nasc !== ''  ? $nasc  : null;
 
-            $up = $conn->prepare("UPDATE usuarios 
+            $up = $conn->prepare("UPDATE usuarios
                 SET nome = ?, email = ?, cpf = ?, telefone = ?, data_nascimento = ?, endereco = ?, tipo = ?
                 WHERE id = ?");
             $up->bind_param("sssssssi", $nome, $emailEsc, $cpfEsc, $telefone, $nascEsc, $endereco, $tipo, $id);
@@ -89,14 +145,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
         }
     }
 
-    $u = ['id' => $id, 'nome' => $nome, 'email' => $email, 'cpf' => $cpf, 'telefone' => $telefone,
-          'data_nascimento' => $nasc, 'endereco' => $endereco, 'tipo' => $tipo];
+    // Atualiza dados na tela em caso de erro
+    $u = [
+        'id' => $id, 'nome' => $nome, 'email' => $email, 'cpf' => $cpf,
+        'telefone' => $telefone, 'data_nascimento' => $nasc,
+        'endereco' => $endereco, 'tipo' => $tipo,
+    ];
     $qAdmins = $conn->query("SELECT COUNT(*) AS n FROM usuarios WHERE tipo = 'admin'");
     $totalAdmins = (int)$qAdmins->fetch_assoc()['n'];
     $ehUltimoAdmin = ($u['tipo'] === 'admin' && $totalAdmins <= 1);
 }
 
-// ---------- Adicionar plano ----------
+// ============================================================
+// 7. AÇÃO: ADICIONAR PLANO
+// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_plano') {
     $operadora = trim($_POST['operadora'] ?? '');
     $numero    = trim($_POST['numero_carteirinha'] ?? '');
@@ -122,7 +184,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_pla
     }
 }
 
-// ---------- Remover plano ----------
+// ============================================================
+// 8. AÇÃO: REMOVER PLANO
+// ============================================================
 if (isset($_GET['remover_plano'])) {
     $planoId = (int)$_GET['remover_plano'];
     $del = $conn->prepare("DELETE FROM planos WHERE id = ? AND usuario_id = ?");
@@ -131,15 +195,16 @@ if (isset($_GET['remover_plano'])) {
     header("Location: editar_usuario.php?id=$id&plano_removido=1");
     exit;
 }
-
 if (isset($_GET['plano_removido'])) $avisoPlano = "Plano removido.";
 
-// ---------- Adicionar dependente ----------
+// ============================================================
+// 9. AÇÃO: ADICIONAR DEPENDENTE
+// ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_dependente') {
-    $nomeDep   = trim($_POST['dep_nome'] ?? '');
-    $cpfDep    = preg_replace('/\D/', '', $_POST['dep_cpf'] ?? '');
-    $nascDep   = trim($_POST['dep_nascimento'] ?? '');
-    $parentesco= trim($_POST['dep_parentesco'] ?? '');
+    $nomeDep    = trim($_POST['dep_nome'] ?? '');
+    $cpfDep     = preg_replace('/\D/', '', $_POST['dep_cpf'] ?? '');
+    $nascDep    = trim($_POST['dep_nascimento'] ?? '');
+    $parentesco = trim($_POST['dep_parentesco'] ?? '');
 
     if ($nomeDep === '' || $parentesco === '') {
         $erro = "Preencha o nome e o parentesco do dependente.";
@@ -156,7 +221,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_dep
     }
 }
 
-// ---------- Remover dependente ----------
+// ============================================================
+// 10. AÇÃO: REMOVER DEPENDENTE
+// ============================================================
 if (isset($_GET['remover_dependente'])) {
     $depId = (int)$_GET['remover_dependente'];
     $del = $conn->prepare("DELETE FROM dependentes WHERE id = ? AND titular_id = ?");
@@ -165,19 +232,25 @@ if (isset($_GET['remover_dependente'])) {
     header("Location: editar_usuario.php?id=$id&dep_removido=1");
     exit;
 }
-
 if (isset($_GET['dep_removido'])) $avisoDependente = "Dependente removido.";
 
-// ---------- Dados para a tela ----------
-$planos = $conn->prepare("SELECT * FROM planos WHERE usuario_id = ? ORDER BY criado_em DESC");
-$planos->bind_param("i", $id); $planos->execute();
-$planos = $planos->get_result()->fetch_all(MYSQLI_ASSOC);
+// ============================================================
+// 11. BUSCA PLANOS E DEPENDENTES PARA A TELA
+// ============================================================
+$planosStmt = $conn->prepare("SELECT * FROM planos WHERE usuario_id = ? ORDER BY criado_em DESC");
+$planosStmt->bind_param("i", $id);
+$planosStmt->execute();
+$planos = $planosStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
-$dependentes = $conn->prepare("SELECT * FROM dependentes WHERE titular_id = ? ORDER BY nome ASC");
-$dependentes->bind_param("i", $id); $dependentes->execute();
-$dependentes = $dependentes->get_result()->fetch_all(MYSQLI_ASSOC);
+$depsStmt = $conn->prepare("SELECT * FROM dependentes WHERE titular_id = ? ORDER BY nome ASC");
+$depsStmt->bind_param("i", $id);
+$depsStmt->execute();
+$dependentes = $depsStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
-$campo = 'w-full px-4 py-3 rounded-xl border border-stone-300 focus:outline-none focus:border-[#8C6D36] text-sm bg-[#FAF9F6]';
+// ============================================================
+// 12. CLASSES DE ESTILO
+// ============================================================
+$campo  = 'w-full px-4 py-3 rounded-xl border border-stone-300 focus:outline-none focus:border-[#8C6D36] text-sm bg-[#FAF9F6]';
 $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1';
 ?>
 <!DOCTYPE html>
@@ -195,7 +268,9 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3">
                 <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
-                <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">Área do Administrador</span>
+                <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
+                    Área do Administrador
+                </span>
             </div>
             <a href="listar_usuarios.php" class="text-xs text-stone-600 hover:text-[#8C6D36] font-medium transition flex items-center">
                 <i class="fa-solid fa-arrow-left mr-1"></i> Voltar à lista
@@ -205,7 +280,9 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
 
     <main class="max-w-3xl mx-auto px-4 py-8 space-y-6">
 
-        <!-- Dados básicos -->
+        <!-- ============================================================ -->
+        <!-- BLOCO 1: DADOS BÁSICOS                                        -->
+        <!-- ============================================================ -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">
                 <div>
@@ -217,11 +294,6 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
             <?php if ($erro !== ''): ?>
                 <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
                     <i class="fa-solid fa-circle-exclamation mr-1"></i> <?php echo h($erro); ?>
-                </div>
-            <?php endif; ?>
-            <?php if ($avisoRedefinicao !== ''): ?>
-                <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-sm">
-                    <i class="fa-solid fa-circle-check mr-1"></i> <?php echo h($avisoRedefinicao); ?>
                 </div>
             <?php endif; ?>
 
@@ -287,14 +359,26 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
             </form>
         </section>
 
-        <!-- Redefinir senha -->
+        <!-- ============================================================ -->
+        <!-- BLOCO 2: REDEFINIR SENHA                                      -->
+        <!-- ============================================================ -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-4">
             <div>
-                <h2 class="text-lg font-serif text-[#3E352E]">Redefinir senha</h2>
+                <h2 class="text-lg font-serif text-[#3E352E]">
+                    <i class="fa-solid fa-key text-[#8C6D36] mr-1"></i> Redefinir senha do usuário
+                </h2>
                 <p class="text-sm text-stone-500 mt-1">
-                    Volta a senha do usuário para o <strong>CPF dele (somente números)</strong>.
+                    Volta a senha do usuário para o <strong>CPF dele (somente números)</strong>. A senha é armazenada de forma criptografada.
                 </p>
             </div>
+
+            <?php if ($avisoRedefinicao !== ''): ?>
+                <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-sm flex items-start gap-2">
+                    <i class="fa-solid fa-circle-check mt-0.5"></i>
+                    <span><?php echo h($avisoRedefinicao); ?></span>
+                </div>
+            <?php endif; ?>
+
             <?php if ($u['cpf']): ?>
                 <div class="text-xs text-stone-500 bg-[#FAF9F6] border border-stone-200 rounded-xl p-3">
                     Nova senha: <strong class="font-mono"><?php echo h(preg_replace('/\D/', '', $u['cpf'])); ?></strong>
@@ -313,7 +397,7 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
         </section>
 
         <!-- ============================================================ -->
-        <!-- PLANO DE SAÚDE                                               -->
+        <!-- BLOCO 3: PLANO DE SAÚDE                                       -->
         <!-- ============================================================ -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">
@@ -329,7 +413,6 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 </div>
             <?php endif; ?>
 
-            <!-- Lista de planos -->
             <?php if ($planos): ?>
                 <ul class="space-y-2">
                     <?php foreach ($planos as $p): ?>
@@ -354,7 +437,6 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 <p class="text-sm text-stone-500">Nenhum plano cadastrado ainda.</p>
             <?php endif; ?>
 
-            <!-- Adicionar plano -->
             <form method="POST" class="space-y-3 pt-4 border-t border-stone-100">
                 <input type="hidden" name="acao" value="add_plano">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -393,7 +475,7 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
         </section>
 
         <!-- ============================================================ -->
-        <!-- DEPENDENTES                                                  -->
+        <!-- BLOCO 4: DEPENDENTES                                          -->
         <!-- ============================================================ -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">

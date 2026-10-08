@@ -1,9 +1,11 @@
 <?php
-session_start();
-require __DIR__ . '/conexao.php'; // $conn, h(), conferirSenha()
+require_once __DIR__ . '/bootstrap.php';
+
+use App\ActivityLogger;
+
+require __DIR__ . '/conexao.php';
 
 $erro = '';
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $login = trim($_POST['email'] ?? '');
     $senha = trim($_POST['senha'] ?? '');
@@ -18,19 +20,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $usuario = $stmt->get_result()->fetch_assoc();
 
         if ($usuario && conferirSenha($senha, $usuario['senha'])) {
-            session_regenerate_id(true);
-            $_SESSION = [];
-            $_SESSION['usuario_id']   = $usuario['id'];
-            $_SESSION['nome_usuario'] = $usuario['nome'];
-            $_SESSION['tipo_usuario'] = $usuario['tipo'];
+    session_regenerate_id(true);
+    $_SESSION = [];
+    $_SESSION['usuario_id']   = $usuario['id'];
+    $_SESSION['nome_usuario'] = $usuario['nome'];
+    $_SESSION['tipo_usuario'] = $usuario['tipo'];
 
-            if ($usuario['tipo'] === 'admin') {
-                header("Location: admin/dashboard.php");
-            } else {
-                header("Location: index.php");
-            }
-            exit();
-        }
+    // 👇 ADICIONE ESTAS LINHAS
+    ActivityLogger::log(
+        action: 'login',
+        description: "Usuário {$usuario['nome']} fez login ({$usuario['tipo']})"
+    );
+
+    if ($usuario['tipo'] === 'admin') {
+        header("Location: admin/dashboard.php");
+    } else {
+        header("Location: index.php");
+    }
+    exit();
+}
 
         // 2) Médico (tabela medicos) — por e-mail ou CRM
         $stmt = $conn->prepare("SELECT id, nome, senha FROM medicos WHERE email = ? OR crm = ?");
@@ -39,15 +47,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $medico = $stmt->get_result()->fetch_assoc();
 
         if ($medico && conferirSenha($senha, $medico['senha'])) {
-            session_regenerate_id(true);
-            $_SESSION = [];
-            $_SESSION['medico_id']    = $medico['id'];
-            $_SESSION['nome_usuario'] = $medico['nome'];
-            $_SESSION['tipo_usuario'] = 'medico';
-            header("Location: medico/dashboard.php");
-            exit();
-        }
+    session_regenerate_id(true);
+    $_SESSION = [];
+    $_SESSION['medico_id']    = $medico['id'];
+    $_SESSION['nome_usuario'] = $medico['nome'];
+    $_SESSION['tipo_usuario'] = 'medico';
 
+    // 👇 ADICIONE ESTAS LINHAS
+    ActivityLogger::log(
+        action: 'login',
+        description: "Médico {$medico['nome']} fez login"
+    );
+
+    header("Location: medico/dashboard.php");
+    exit();
+}
+// Registra tentativa falha (útil contra ataques de força bruta)
+ActivityLogger::log(
+    action: 'login_failed',
+    description: "Tentativa de login falhou para: " . substr($login, 0, 3) . "***"
+);
         $erro = "E-mail ou senha inválidos.";
     } else {
         $erro = "Preencha todos os campos.";

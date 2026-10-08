@@ -1,6 +1,11 @@
 <?php
-require __DIR__ . '/conexao.php';
-require __DIR__ . '/medico/painel_documentos.php';
+require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/conexao.php';
+require_once __DIR__ . '/medico/painel_documentos.php';
+
+use App\ActivityLogger;
+use App\TiposAtendimento;
+
 verificarEsquema($conn);
 
 if (!isset($_SESSION['usuario_id']) && !souMedico()) { header("Location: login.php"); exit; }
@@ -15,13 +20,40 @@ if (!$acesso) {
 } else {
     $c = $acesso['consulta'];
     $papel = $acesso['papel'];
+
     if ($papel === 'medico' && $c['status'] === 'Agendada') {
         $up = $conn->prepare("UPDATE consultas SET status = 'Em andamento' WHERE id = ? AND medico_id = ? AND status = 'Agendada'");
         $mid = (int)$c['medico_id']; $cidUp = (int)$c['id'];
         $up->bind_param('ii', $cidUp, $mid);
         $up->execute();
+
+        if ($up->affected_rows > 0) {
+            $ehPA_up = ($c['tipo'] ?? '') === 'pronto_atendimento';
+            $produto = $ehPA_up ? TiposAtendimento::LAC_ATENDE : TiposAtendimento::LAC_TELEATENDIMENTO;
+            $nomeProduto = $ehPA_up ? 'LAC Atende' : 'LAC Teleatendimento';
+
+            ActivityLogger::log(
+                action: 'atendimento_iniciado',
+                entity: 'consulta',
+                entityId: $cidUp,
+                description: "{$nomeProduto}: Dr(a). {$_SESSION['nome_usuario']} iniciou atendimento com {$c['paciente_nome']}",
+                metadata: [
+                    'consulta_id'    => $cidUp,
+                    'medico_id'      => $mid,
+                    'medico_nome'    => $_SESSION['nome_usuario'] ?? null,
+                    'paciente_id'    => (int)$c['usuario_id'],
+                    'paciente_nome'  => $c['paciente_nome'] ?? null,
+                    'especialidade'  => $c['especialidade'] ?? null,
+                    'modalidade'     => $c['modalidade'] ?? null,
+                    'tipo_consulta'  => $c['tipo'] ?? null,
+                    'iniciado_em'    => date('Y-m-d H:i:s'),
+                ],
+                tags: [$produto, TiposAtendimento::INICIADO, TiposAtendimento::EM_ANDAMENTO]
+            );
+        }
         $c['status'] = 'Em andamento';
     }
+
     $ehPA = ($c['tipo'] ?? '') === 'pronto_atendimento';
     $encerrada = !in_array($c['status'], ['Agendada', 'Em andamento'], true);
 
@@ -45,6 +77,7 @@ if (!$acesso) {
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
 <body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen">
+
 <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
         <img src="logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
@@ -55,6 +88,7 @@ if (!$acesso) {
 </header>
 
 <main class="max-w-7xl mx-auto px-4 py-6">
+
 <?php if (!$acesso): ?>
     <div class="bg-white p-8 rounded-3xl border border-[#E6D5B8]/40 shadow-xl text-center max-w-lg mx-auto space-y-3">
         <i class="fa-solid fa-lock text-3xl text-[#8C6D36]"></i>
@@ -68,9 +102,13 @@ if (!$acesso) {
         <a href="<?php echo $voltar; ?>" class="inline-block bg-[#3E352E] text-white px-5 py-2.5 rounded-xl text-sm">Voltar ao início</a>
     </div>
 <?php else: ?>
-    <div class="grid grid-cols-1 <?php echo $papel === 'medico' ? 'lg:grid-cols-5' : 'lg:grid-cols-3'; ?> gap-6">
-        <!-- Vídeo -->
-        <section class="<?php echo $papel === 'medico' ? 'lg:col-span-3' : 'lg:col-span-2'; ?> space-y-4">
+
+    <div class="grid grid-cols-1 <?php echo $papel === 'medico' ? 'lg:grid-cols-5' : 'lg:grid-cols-3'; ?> gap-6 items-start">
+
+        <!-- ============================ -->
+        <!-- COLUNA ESQUERDA: VÍDEO        -->
+        <!-- ============================ -->
+        <section class="<?php echo $papel === 'medico' ? 'lg:col-span-2' : 'lg:col-span-2'; ?> space-y-4">
             <div class="bg-stone-900 rounded-3xl overflow-hidden relative aspect-video shadow-xl border border-[#C5A059]/30">
                 <video id="video-remoto" autoplay playsinline class="w-full h-full object-cover"></video>
                 <div id="aguardando" class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-stone-300 text-sm text-center px-6">
@@ -97,66 +135,133 @@ if (!$acesso) {
                 </button>
                 <?php endif; ?>
             </div>
-            <p class="text-xs text-stone-500 text-center"><i class="fa-solid fa-lock text-[#C5A059]"></i> Áudio e vídeo trafegam diretamente entre você e o outro participante.</p>
+
+            <p class="text-xs text-stone-500 text-center">
+                <i class="fa-solid fa-lock text-[#C5A059]"></i> Áudio e vídeo trafegam diretamente entre você e o outro participante.
+            </p>
         </section>
 
-        <!-- Painel lateral -->
-        <aside class="space-y-4">
-            <?php if ($papel === 'medico'): ?>
-                <div class="bg-white p-5 rounded-3xl border border-[#E6D5B8]/40 shadow-sm space-y-2">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-3 py-1 rounded-full uppercase tracking-wider">Paciente</span>
-                        <?php if ($ehPA): ?><span class="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full">Pronto atendimento</span><?php endif; ?>
+        <!-- ============================ -->
+        <!-- COLUNA DIREITA: PAINEL        -->
+        <!-- ============================ -->
+        <aside class="<?php echo $papel === 'medico' ? 'lg:col-span-3' : 'lg:col-span-1'; ?> space-y-4 lg:sticky lg:top-24 lg:self-start">
+
+        <?php if ($papel === 'medico'): ?>
+
+            <!-- Card: informações do paciente -->
+            <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-2 mb-2">
+                            <span class="text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
+                                <i class="fa-solid fa-user mr-1"></i> Paciente
+                            </span>
+                            <?php if ($ehPA): ?>
+                                <span class="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-1 rounded-full">
+                                    <i class="fa-solid fa-bolt mr-1"></i> Pronto atendimento
+                                </span>
+                            <?php endif; ?>
+                        </div>
+                        <h2 class="text-xl font-serif text-[#3E352E] truncate"><?php echo h($c['paciente_nome']); ?></h2>
+                        <p class="text-xs text-stone-500 mt-1">
+                            <i class="fa-regular fa-calendar text-[#8C6D36]"></i> <?php echo h(textoIdade($c['paciente_nasc'])); ?>
+                            · <i class="fa-solid fa-stethoscope text-[#8C6D36]"></i> <?php echo h($c['especialidade']); ?>
+                        </p>
                     </div>
-                    <h2 class="text-2xl font-serif text-[#3E352E]"><?php echo h($c['paciente_nome']); ?></h2>
-                    <p class="text-sm text-stone-600"><i class="fa-regular fa-calendar text-[#8C6D36]"></i> <?php echo h(textoIdade($c['paciente_nasc'])); ?> · <?php echo h($c['especialidade']); ?></p>
-                    <div class="text-sm <?php echo $alergias ? 'bg-red-50 border-red-200 text-red-800' : 'bg-stone-50 border-stone-200 text-stone-600'; ?> border rounded-xl p-3">
-                        <strong>Alergias:</strong> <?php echo $alergias ? h($alergias) : 'não registradas'; ?>
+                    <div class="w-11 h-11 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] shrink-0">
+                        <i class="fa-solid fa-user text-lg"></i>
                     </div>
                 </div>
 
-                <div class="bg-white p-4 rounded-3xl border border-[#E6D5B8]/40 shadow-sm space-y-3">
-                    <div class="flex gap-2">
-                        <button type="button" id="aba-pront" onclick="abaPainel('pront')" class="flex-1 px-3 py-2 rounded-xl text-sm font-medium bg-[#3E352E] text-white"><i class="fa-solid fa-notes-medical mr-1"></i> Prontuário</button>
-                        <button type="button" id="aba-docs" onclick="abaPainel('docs')" class="flex-1 px-3 py-2 rounded-xl text-sm font-medium bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8]"><i class="fa-solid fa-file-medical mr-1"></i> Receita / Atestado</button>
-                    </div>
-                    <div id="painel-pront" class="space-y-2">
-                        <iframe src="medico/prontuario.php?id=<?php echo (int)$c['usuario_id']; ?>&consulta=<?php echo (int)$c['id']; ?>&embed=1#nova-evolucao"
-                                class="w-full h-[68vh] rounded-xl border border-stone-200 bg-white" title="Prontuário do paciente"></iframe>
-                        <a href="medico/prontuario.php?id=<?php echo (int)$c['usuario_id']; ?>&consulta=<?php echo (int)$c['id']; ?>#nova-evolucao" target="_blank" class="text-xs text-stone-500 hover:text-[#8C6D36] underline">Abrir o prontuário em outra aba</a>
-                    </div>
-                    <div id="painel-docs" class="hidden">
+                <div class="mt-3 text-xs <?php echo $alergias ? 'bg-red-50 border-red-200 text-red-800' : 'bg-stone-50 border-stone-200 text-stone-600'; ?> border rounded-xl p-2.5 flex items-start gap-2">
+                    <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                    <span><strong>Alergias:</strong> <?php echo $alergias ? h($alergias) : 'não registradas'; ?></span>
+                </div>
+            </div>
+
+            <!-- Card: prontuário e documentos (GRANDE) -->
+            <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
+                <!-- Abas -->
+                <div class="flex gap-2 mb-4">
+                    <button type="button" id="aba-pront" onclick="abaPainel('pront')"
+                            class="flex-1 px-3 py-2.5 rounded-xl text-sm font-medium bg-[#3E352E] text-white transition">
+                        <i class="fa-solid fa-notes-medical mr-1"></i> Prontuário
+                    </button>
+                    <button type="button" id="aba-docs" onclick="abaPainel('docs')"
+                            class="flex-1 px-3 py-2.5 rounded-xl text-sm font-medium bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8] hover:bg-[#F4E8D1] transition">
+                        <i class="fa-solid fa-file-medical mr-1"></i> Receita / Atestado
+                    </button>
+                </div>
+
+                <!-- Painel: Prontuário -->
+                <div id="painel-pront">
+                    <iframe src="medico/prontuario.php?id=<?php echo (int)$c['usuario_id']; ?>&consulta=<?php echo (int)$c['id']; ?>&embed=1#nova-evolucao"
+                            class="w-full rounded-xl border border-stone-200 bg-white"
+                            style="height: 72vh;"
+                            title="Prontuário do paciente"></iframe>
+                    <a href="medico/prontuario.php?id=<?php echo (int)$c['usuario_id']; ?>&consulta=<?php echo (int)$c['id']; ?>#nova-evolucao"
+                       target="_blank"
+                       class="mt-2 text-xs text-stone-500 hover:text-[#8C6D36] underline inline-flex items-center gap-1">
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i> Abrir o prontuário em outra aba
+                    </a>
+                </div>
+
+                <!-- Painel: Documentos -->
+                <div id="painel-docs" class="hidden">
+                    <div class="rounded-xl border border-stone-200 bg-white p-4 overflow-y-auto" style="height: 72vh;">
                         <?php painelDocumentos((int)$c['usuario_id'], (int)$c['id'], ''); ?>
                     </div>
                 </div>
-            <?php else: ?>
-                <div class="bg-white p-6 rounded-3xl border border-[#E6D5B8]/40 shadow-sm space-y-3">
-                    <span class="text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-3 py-1 rounded-full uppercase tracking-wider">Seu médico</span>
-                    <h2 id="nome-medico" class="text-2xl font-serif text-[#3E352E]"><?php echo h($c['medico_nome'] ?? 'Aguardando um médico da especialidade'); ?></h2>
-                    <p class="text-sm text-stone-600"><?php echo h($c['especialidade']); ?></p>
-                    <p class="text-sm text-stone-600"><i class="fa-regular fa-clock text-[#8C6D36]"></i> <?php echo date('d/m/Y H:i', strtotime($c['data_hora'])); ?></p>
-                    <p class="text-xs text-stone-500 bg-[#F9F4EC] border border-[#E6D5B8] rounded-xl p-3">Fique em um local tranquilo, com boa iluminação e internet estável. Quando o médico entrar na sala, a chamada começa automaticamente.</p>
-                </div>
-                <div id="caixa-docs" class="hidden bg-white p-6 rounded-3xl border border-[#E6D5B8]/40 shadow-sm space-y-3">
-                    <h3 class="text-lg font-serif text-[#3E352E]"><i class="fa-solid fa-file-medical text-[#8C6D36] mr-1"></i> Documentos enviados pelo médico</h3>
-                    <ul id="lista-docs" class="space-y-2 text-sm"></ul>
-                </div>
-                <div id="aviso-encerrada" class="hidden bg-emerald-50 border border-emerald-200 text-emerald-800 p-5 rounded-3xl text-sm space-y-2">
-                    <p><i class="fa-regular fa-circle-check mr-1"></i> <strong>Consulta encerrada pelo médico.</strong> Suas receitas e atestados ficam guardados no histórico.</p>
-                    <a href="historico.php" class="inline-block bg-[#3E352E] text-white px-4 py-2 rounded-xl">Ir para o histórico</a>
-                </div>
-                <div id="toast-doc" class="hidden fixed bottom-6 right-6 z-50 bg-[#3E352E] text-white px-5 py-3 rounded-xl shadow-xl text-sm">
-                    <i class="fa-solid fa-file-medical text-[#C5A059] mr-2"></i> O médico enviou um documento para você.
-                </div>
-            <?php endif; ?>
+            </div>
+
+        <?php else: ?>
+
+            <!-- Visão do PACIENTE -->
+            <div class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-3">
+                <span class="text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-3 py-1 rounded-full uppercase tracking-wider">
+                    <i class="fa-solid fa-user-doctor mr-1"></i> Seu médico
+                </span>
+                <h2 id="nome-medico" class="text-2xl font-serif text-[#3E352E]">
+                    <?php echo h($c['medico_nome'] ?? 'Aguardando um médico da especialidade'); ?>
+                </h2>
+                <p class="text-sm text-stone-600"><?php echo h($c['especialidade']); ?></p>
+                <p class="text-sm text-stone-600">
+                    <i class="fa-regular fa-clock text-[#8C6D36]"></i>
+                    <?php echo date('d/m/Y H:i', strtotime($c['data_hora'])); ?>
+                </p>
+                <p class="text-xs text-stone-500 bg-[#F9F4EC] border border-[#E6D5B8] rounded-xl p-3">
+                    Fique em um local tranquilo, com boa iluminação e internet estável. Quando o médico entrar na sala, a chamada começa automaticamente.
+                </p>
+            </div>
+
+            <div id="caixa-docs" class="hidden bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-3">
+                <h3 class="text-lg font-serif text-[#3E352E]">
+                    <i class="fa-solid fa-file-medical text-[#8C6D36] mr-1"></i> Documentos enviados pelo médico
+                </h3>
+                <ul id="lista-docs" class="space-y-2 text-sm"></ul>
+            </div>
+
+            <div id="aviso-encerrada" class="hidden bg-emerald-50 border border-emerald-200 text-emerald-800 p-5 rounded-2xl text-sm space-y-2">
+                <p><i class="fa-regular fa-circle-check mr-1"></i> <strong>Consulta encerrada pelo médico.</strong> Suas receitas e atestados ficam guardados no histórico.</p>
+                <a href="historico.php" class="inline-block bg-[#3E352E] text-white px-4 py-2 rounded-xl">Ir para o histórico</a>
+            </div>
+
+            <div id="toast-doc" class="hidden fixed bottom-6 right-6 z-50 bg-[#3E352E] text-white px-5 py-3 rounded-xl shadow-xl text-sm">
+                <i class="fa-solid fa-file-medical text-[#C5A059] mr-2"></i> O médico enviou um documento para você.
+            </div>
+
+        <?php endif; ?>
         </aside>
     </div>
 
+<?php endif; ?>
+</main>
+
 <script>
-const CONSULTA = <?php echo (int)$c['id']; ?>;
-const PAPEL    = <?php echo json_encode($papel); ?>;
+const CONSULTA = <?php echo (int)($c['id'] ?? 0); ?>;
+const PAPEL    = <?php echo json_encode($papel ?? ''); ?>;
 const VOLTAR   = <?php echo json_encode($voltar); ?>;
-const EH_PA    = <?php echo json_encode($ehPA); ?>;
+const EH_PA    = <?php echo json_encode($ehPA ?? false); ?>;
 const API      = 'api/sinal.php';
 const ICE      = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
 
@@ -166,8 +271,9 @@ let remotoPronto = false, filaCandidates = [];
 const el = id => document.getElementById(id);
 const dormir = ms => new Promise(r => setTimeout(r, ms));
 function status(txt, mostrar = true) {
-    el('texto-status').textContent = txt;
-    el('aguardando').style.display = mostrar ? 'flex' : 'none';
+    const t = el('texto-status'); const a = el('aguardando');
+    if (t) t.textContent = txt;
+    if (a) a.style.display = mostrar ? 'flex' : 'none';
 }
 
 async function chamar(acao, dados) {
@@ -235,7 +341,7 @@ async function loopSinal() {
         try {
             const r = await chamar('receber');
             for (const m of (r.mensagens || [])) { ultimoId = Math.max(ultimoId, +m.id); await processar(m); }
-        } catch (e) { /* tenta de novo no próximo ciclo */ }
+        } catch (e) {}
         await dormir(1000);
     }
 }
@@ -264,34 +370,37 @@ async function acompanhar() {
             const r = await fetch('api/documentos.php?acao=listar&consulta=' + CONSULTA, { credentials: 'same-origin' });
             if (r.ok) {
                 const j = await r.json();
-                if (j.medico_nome) el('nome-medico').textContent = j.medico_nome;
+                const elNome = el('nome-medico');
+                if (j.medico_nome && elNome) elNome.textContent = j.medico_nome;
                 renderDocs(j.documentos || []);
                 if (j.status === 'Realizada' || j.status === 'Cancelada') {
                     ativo = false;
                     el('video-remoto').srcObject = null;
                     status(j.status === 'Realizada' ? 'Consulta encerrada pelo médico.' : 'Esta solicitação foi cancelada.');
-                    if (j.status === 'Realizada') el('aviso-encerrada').classList.remove('hidden');
+                    const av = el('aviso-encerrada');
+                    if (j.status === 'Realizada' && av) av.classList.remove('hidden');
                     if (localStream) localStream.getTracks().forEach(t => t.stop());
                     if (pc) pc.close();
                     return;
                 }
             }
-        } catch (e) { /* tenta de novo no próximo ciclo */ }
+        } catch (e) {}
         await dormir(4000);
     }
 }
+
 let docsCarregados = false;
 function renderDocs(docs) {
     const novo = docsCarregados && docs.length > totalDocs;
     docsCarregados = true;
     if (!docs.length) return;
-    el('caixa-docs').classList.remove('hidden');
+    const cx = el('caixa-docs'); if (cx) cx.classList.remove('hidden');
     if (novo) {
-        el('toast-doc').classList.remove('hidden');
-        setTimeout(() => el('toast-doc').classList.add('hidden'), 6000);
+        const t = el('toast-doc'); if (t) { t.classList.remove('hidden'); setTimeout(() => t.classList.add('hidden'), 6000); }
     }
     totalDocs = docs.length;
-    const ul = el('lista-docs'); ul.innerHTML = '';
+    const ul = el('lista-docs'); if (!ul) return;
+    ul.innerHTML = '';
     docs.forEach(d => {
         const li = document.createElement('li');
         li.className = 'flex items-center justify-between gap-2 border border-stone-200 rounded-xl px-3 py-2 bg-[#FAF9F6]';
@@ -310,8 +419,8 @@ function abaPainel(qual) {
     const pront = qual === 'pront';
     el('painel-pront').classList.toggle('hidden', !pront);
     el('painel-docs').classList.toggle('hidden', pront);
-    el('aba-pront').className = 'flex-1 px-3 py-2 rounded-xl text-sm font-medium ' + (pront ? 'bg-[#3E352E] text-white' : 'bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8]');
-    el('aba-docs').className  = 'flex-1 px-3 py-2 rounded-xl text-sm font-medium ' + (!pront ? 'bg-[#3E352E] text-white' : 'bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8]');
+    el('aba-pront').className = 'flex-1 px-3 py-2.5 rounded-xl text-sm font-medium transition ' + (pront ? 'bg-[#3E352E] text-white' : 'bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8] hover:bg-[#F4E8D1]');
+    el('aba-docs').className  = 'flex-1 px-3 py-2.5 rounded-xl text-sm font-medium transition ' + (!pront ? 'bg-[#3E352E] text-white' : 'bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8] hover:bg-[#F4E8D1]');
 }
 
 function alternarMic() {
@@ -347,9 +456,9 @@ window.addEventListener('pagehide', () => {
     navigator.sendBeacon(API + '?acao=enviar&consulta=' + CONSULTA, fd);
 });
 
-iniciar();
+if (document.getElementById('video-local')) {
+    iniciar();
+}
 </script>
-<?php endif; ?>
-</main>
 </body>
 </html>

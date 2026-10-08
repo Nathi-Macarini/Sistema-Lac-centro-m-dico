@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../../bootstrap.php';
 // API de receitas e atestados.
 //   POST acao=emitir            (só médico)  -> grava o documento
 //   GET  acao=listar&consulta=  (médico ou paciente da consulta) -> documentos + status

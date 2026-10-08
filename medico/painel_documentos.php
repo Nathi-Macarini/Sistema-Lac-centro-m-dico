@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../bootstrap.php';
 // Painel reutilizável: o médico escreve receita ou atestado e envia ao paciente.
 // Usado dentro da sala de teleconsulta e na tela do prontuário.
 //   $pacienteId  : paciente que vai receber

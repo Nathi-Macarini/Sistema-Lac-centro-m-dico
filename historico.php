@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/bootstrap.php'; 
 // Histórico do paciente: todas as consultas agendadas e atendimentos de pronto atendimento,
 // mais as receitas e atestados enviados pelos médicos.
 require __DIR__ . '/conexao.php';

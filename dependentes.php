@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/bootstrap.php'; 
 require __DIR__ . '/conexao.php';
 
 if (!isset($_SESSION['usuario_id'])) { header("Location: login.php"); exit; }

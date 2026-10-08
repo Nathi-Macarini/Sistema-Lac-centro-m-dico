@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/bootstrap.php'; 
 // Visualização / impressão de receita ou atestado.
 // Acesso: o paciente dono do documento ou o médico que o emitiu.
 require __DIR__ . '/conexao.php';

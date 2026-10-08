@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/bootstrap.php'; 
 // ============================================================
 // Conexão e funções compartilhadas (admin, médico, teleconsulta)
 // ============================================================

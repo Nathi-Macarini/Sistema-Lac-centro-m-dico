@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../bootstrap.php';
 // Cabeçalho/rodapé comuns das páginas da visão do médico
 function cabecalho($titulo, $ativo = '', $embed = false) {
     $nome = $_SESSION['nome_usuario'] ?? 'Médico';

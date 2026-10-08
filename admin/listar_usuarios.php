@@ -1,5 +1,5 @@
 <?php
-session_start();
+require_once __DIR__ . '/../bootstrap.php';
 require __DIR__ . '/../conexao.php';
 
 // Só o administrador acessa
@@ -72,8 +72,10 @@ $res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM
     <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
-                <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">Área do Administrador</span>
+                <img src="../logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
+                <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
+                    Painel Administrativo
+                </span>
             </div>
             <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
                 <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel

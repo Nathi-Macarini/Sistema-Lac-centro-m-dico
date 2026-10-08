@@ -1,5 +1,9 @@
 <?php
-require __DIR__ . '/conexao.php';
+require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/conexao.php';
+
+use App\ActivityLogger;
+use App\TiposAtendimento;
 
 if (!isset($_SESSION['usuario_id'])) {
     header("Location: login.php");
@@ -30,6 +34,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'agendar
         $st = $conn->prepare("INSERT INTO consultas (usuario_id, especialidade, modalidade, tipo, data_hora, status) VALUES (?, ?, ?, 'agendada', ?, 'Agendada')");
         $st->bind_param('isss', $uid, $esp, $mod, $dataSql);
         if ($st->execute()) {
+            $consultaId = (int) $conn->insert_id;
+
+            ActivityLogger::log(
+                action: 'consulta_agendada',
+                entity: 'consulta',
+                entityId: $consultaId,
+                description: "Paciente {$_SESSION['nome_usuario']} agendou {$esp} ({$mod}) para " . date('d/m/Y H:i', strtotime($dataSql)),
+                metadata: [
+                    'consulta_id'   => $consultaId,
+                    'especialidade' => $esp,
+                    'modalidade'    => $mod,
+                    'data_hora'     => $dataSql,
+                    'tipo'          => 'agendada',
+                ],
+                tags: [
+                    TiposAtendimento::LAC_TELEATENDIMENTO,
+                    TiposAtendimento::AGENDADO,
+                ]
+            );
+
             header("Location: index.php?ok=agendada");
             exit;
         }
@@ -58,7 +82,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'pronto_
         $st = $conn->prepare("INSERT INTO consultas (usuario_id, especialidade, modalidade, tipo, data_hora, status) VALUES (?, ?, 'Vídeo', 'pronto_atendimento', ?, 'Agendada')");
         $st->bind_param('iss', $uid, $esp, $agora);
         if ($st->execute()) {
-            header("Location: teleconsulta.php?consulta=" . (int)$conn->insert_id);
+            $consultaId = (int) $conn->insert_id;
+
+            ActivityLogger::log(
+                action: 'lac_atende_iniciado',
+                entity: 'consulta',
+                entityId: $consultaId,
+                description: "Paciente {$_SESSION['nome_usuario']} entrou na fila do LAC Atende ({$esp})",
+                metadata: [
+                    'consulta_id'   => $consultaId,
+                    'especialidade' => $esp,
+                    'tipo'          => 'pronto_atendimento',
+                    'data_hora'     => $agora,
+                ],
+                tags: [
+                    TiposAtendimento::LAC_ATENDE,
+                    TiposAtendimento::INICIADO,
+                    TiposAtendimento::EM_ANDAMENTO,
+                ]
+            );
+
+            header("Location: teleconsulta.php?consulta=" . $consultaId);
             exit;
         }
         $aviso = "Não foi possível entrar na fila: " . $conn->error;
@@ -72,6 +116,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'cancela
     $st = $conn->prepare("UPDATE consultas SET status = 'Cancelada' WHERE id = ? AND usuario_id = ? AND status = 'Agendada'");
     $st->bind_param('ii', $cid, $uid);
     $st->execute();
+
+    if ($st->affected_rows > 0) {
+        ActivityLogger::log(
+            action: 'consulta_cancelada',
+            entity: 'consulta',
+            entityId: $cid,
+            description: "Paciente {$_SESSION['nome_usuario']} cancelou a consulta #{$cid}",
+            metadata: ['consulta_id' => $cid],
+            tags: [
+                TiposAtendimento::LAC_TELEATENDIMENTO,
+                TiposAtendimento::CANCELADO,
+            ]
+        );
+    }
+
     header("Location: index.php?ok=cancelada");
     exit;
 }

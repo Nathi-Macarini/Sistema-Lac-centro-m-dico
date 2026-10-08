@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/bootstrap.php'; 
 $conn = new mysqli('localhost', 'root', '', 'lac_centro_medico');
 if ($conn->connect_error) die("Erro de conexão: " . $conn->connect_error);
 
