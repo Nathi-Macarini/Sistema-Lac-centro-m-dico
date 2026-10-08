@@ -1,122 +1,132 @@
 <?php
 session_start();
-if (!isset($_SESSION['usuario_id']) || $_SESSION['tipo_usuario'] !== 'admin') {
+require __DIR__ . '/../conexao.php';
+
+// Só o administrador cadastra médicos
+if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'admin') {
     header("Location: ../login.php");
     exit;
 }
 
-$conn = new mysqli('localhost', 'root', '', 'lac_centro_medico');
-if ($conn->connect_error) die("Erro de conexão: " . $conn->connect_error);
-
-$msg = ""; $tipo = "";
+$erro = '';
+$especialidades = ['Cardiologia', 'Dermatologia', 'Ortopedia', 'Ginecologia', 'Clínica Geral'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $nome  = trim($_POST['nome'] ?? '');
-    $crm   = trim($_POST['crm'] ?? '');
-    $esp   = trim($_POST['especialidade'] ?? '');
-    $email = trim($_POST['email'] ?? '');
-    $tel   = trim($_POST['telefone'] ?? '');
+    $nome          = trim($_POST['nome'] ?? '');
+    $crm           = trim($_POST['crm'] ?? '');
+    $especialidade = trim($_POST['especialidade'] ?? '');
+    $email         = trim($_POST['email'] ?? '');
+    $telefone      = trim($_POST['telefone'] ?? '');
+    $senha         = trim($_POST['senha'] ?? '');
 
-    if ($nome === '' || $crm === '' || $esp === '') {
-        $msg = "Nome, CRM e Especialidade são obrigatórios."; $tipo = "erro";
+    if ($nome === '' || $crm === '' || $especialidade === '' || $email === '' || $senha === '') {
+        $erro = "Preencha Nome, CRM, Especialidade, E-mail e Senha.";
+    } elseif (strlen($senha) < 6) {
+        $erro = "A senha temporária deve ter pelo menos 6 caracteres.";
     } else {
-        $check = $conn->query("SELECT id FROM medicos WHERE crm = '" . $conn->real_escape_string($crm) . "'");
-        if ($check && $check->num_rows > 0) {
-            $msg = "Já existe um médico com esse CRM."; $tipo = "erro";
+        // CRM e e-mail não podem repetir na tabela medicos
+        $st = $conn->prepare("SELECT id FROM medicos WHERE crm = ? OR email = ?");
+        $st->bind_param("ss", $crm, $email);
+        $st->execute();
+        $st->store_result();
+
+        if ($st->num_rows > 0) {
+            $erro = "Já existe um médico com esse CRM ou e-mail.";
         } else {
-            $emailEsc = $email !== '' ? "'" . $conn->real_escape_string($email) . "'" : "NULL";
-            $sql = "INSERT INTO medicos (nome, crm, especialidade, email, telefone) VALUES (
-                        '" . $conn->real_escape_string($nome) . "',
-                        '" . $conn->real_escape_string($crm) . "',
-                        '" . $conn->real_escape_string($esp) . "',
-                        $emailEsc,
-                        '" . $conn->real_escape_string($tel) . "'
-                    )";
-            if ($conn->query($sql)) {
-                $msg = "Médico cadastrado com sucesso!"; $tipo = "sucesso";
-            } else {
-                $msg = "Erro ao cadastrar: " . $conn->error; $tipo = "erro";
+            // Tudo do médico fica na tabela medicos (a senha vai criptografada)
+            $hash = password_hash($senha, PASSWORD_DEFAULT);
+            $ins = $conn->prepare("INSERT INTO medicos (nome, crm, especialidade, email, telefone, senha) VALUES (?, ?, ?, ?, ?, ?)");
+            $ins->bind_param("ssssss", $nome, $crm, $especialidade, $email, $telefone, $hash);
+
+            if ($ins->execute()) {
+                header("Location: cadastrar_medico.php?sucesso=1");
+                exit();
             }
+            $erro = "Erro ao salvar no banco de dados: " . $ins->error;
         }
     }
 }
+
+$campo = 'w-full px-4 py-3 rounded-xl border border-stone-300 focus:outline-none focus:border-[#8C6D36] text-sm bg-[#FAF9F6]';
+$rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1';
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cadastrar Médico - Admin LAC</title>
+    <title>Cadastrar Médico - LAC Centro Médico</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
-<body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen">
+<body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen p-6 flex items-center justify-center">
 
-    <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-            <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
-            <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
-                <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
-            </a>
+<div class="max-w-xl w-full bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
+    <div class="flex items-center justify-between border-b border-stone-200 pb-4">
+        <div>
+            <h1 class="text-2xl font-serif text-[#3E352E]">Cadastrar Médico</h1>
+            <p class="text-xs text-stone-500 mt-0.5">O médico poderá entrar no sistema com o e-mail e a senha cadastrados aqui</p>
         </div>
-    </header>
+        <a href="dashboard.php" class="text-xs text-stone-500 hover:text-[#8C6D36] font-medium transition flex items-center">
+            <i class="fa-solid fa-arrow-left mr-1"></i> Voltar
+        </a>
+    </div>
 
-    <main class="max-w-3xl mx-auto px-4 py-8">
-        <section class="bg-white p-8 rounded-3xl border border-[#E6D5B8]/40 shadow-xl space-y-6">
+    <?php if (isset($_GET['sucesso'])): ?>
+        <div class="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-xl text-sm flex items-center">
+            <i class="fa-solid fa-circle-check mr-2 text-base"></i>
+            <span>Médico cadastrado! Ele já pode entrar pela tela de login. <a href="listar_medicos.php" class="underline font-medium">Ver médicos cadastrados</a></span>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($erro !== ''): ?>
+        <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm flex items-center">
+            <i class="fa-solid fa-circle-exclamation mr-2 text-base"></i> <?php echo h($erro); ?>
+        </div>
+    <?php endif; ?>
+
+    <form action="cadastrar_medico.php" method="POST" class="space-y-4">
+        <div>
+            <label class="<?php echo $rotulo; ?>">Nome completo</label>
+            <input type="text" name="nome" required value="<?php echo h($_POST['nome'] ?? ''); ?>" class="<?php echo $campo; ?>">
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-                <h1 class="text-2xl font-serif text-[#3E352E]">Cadastrar Novo Médico</h1>
-                <p class="text-sm text-stone-500 mt-1">Registre o profissional com CRM, especialidade e contato.</p>
+                <label class="<?php echo $rotulo; ?>">CRM</label>
+                <input type="text" name="crm" required placeholder="Ex: 12345/PR" value="<?php echo h($_POST['crm'] ?? ''); ?>" class="<?php echo $campo; ?>">
             </div>
+            <div>
+                <label class="<?php echo $rotulo; ?>">Especialidade</label>
+                <select name="especialidade" required class="<?php echo $campo; ?>">
+                    <?php foreach ($especialidades as $e): ?>
+                        <option value="<?php echo h($e); ?>" <?php echo (($_POST['especialidade'] ?? '') === $e) ? 'selected' : ''; ?>><?php echo h($e); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+        </div>
 
-            <?php if ($msg): ?>
-                <div class="<?php echo $tipo==='sucesso' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'; ?> p-3.5 rounded-xl text-sm border">
-                    <?php echo $msg; ?>
-                </div>
-            <?php endif; ?>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+                <label class="<?php echo $rotulo; ?>">E-mail (login)</label>
+                <input type="email" name="email" required value="<?php echo h($_POST['email'] ?? ''); ?>" class="<?php echo $campo; ?>">
+            </div>
+            <div>
+                <label class="<?php echo $rotulo; ?>">Telefone / Celular</label>
+                <input type="text" name="telefone" placeholder="(41) 99999-9999" value="<?php echo h($_POST['telefone'] ?? ''); ?>" class="<?php echo $campo; ?>">
+            </div>
+        </div>
 
-            <form method="POST" class="space-y-4">
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div class="sm:col-span-2">
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Nome Completo *</label>
-                        <input type="text" name="nome" required
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
-                    </div>
+        <div>
+            <label class="<?php echo $rotulo; ?>">Senha temporária (mínimo 6 caracteres)</label>
+            <input type="text" name="senha" required minlength="6" class="<?php echo $campo; ?>">
+        </div>
 
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">CRM *</label>
-                        <input type="text" name="crm" required
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]"
-                               placeholder="CRM/PR 000000">
-                    </div>
+        <button type="submit" class="w-full bg-[#3E352E] text-white py-3 rounded-xl font-medium hover:bg-[#5A4A3A] transition shadow-sm text-sm">
+            Cadastrar Médico
+        </button>
+    </form>
+</div>
 
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Especialidade *</label>
-                        <input type="text" name="especialidade" required
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]"
-                               placeholder="Cardiologia">
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">E-mail</label>
-                        <input type="email" name="email"
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Telefone</label>
-                        <input type="text" name="telefone"
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
-                    </div>
-                </div>
-
-                <div class="flex justify-end gap-3 pt-2">
-                    <a href="dashboard.php" class="px-5 py-3 border border-stone-300 text-stone-700 rounded-xl text-sm font-medium hover:bg-stone-50">Cancelar</a>
-                    <button type="submit" class="bg-[#3E352E] hover:bg-[#5A4A3A] text-white px-6 py-3 rounded-xl text-sm font-medium transition shadow-sm">
-                        <i class="fa-solid fa-user-doctor mr-1"></i> Cadastrar Médico
-                    </button>
-                </div>
-            </form>
-        </section>
-    </main>
 </body>
 </html>

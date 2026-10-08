@@ -1,30 +1,57 @@
 <?php
 session_start();
-$erro = "";
+require __DIR__ . '/conexao.php'; // $conn, h(), conferirSenha()
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $conn = new mysqli('localhost', 'root', '', 'lac_centro_medico');
-    if ($conn->connect_error) die("Erro de conexão: " . $conn->connect_error);
+$erro = '';
 
-    $login = $conn->real_escape_string($_POST['login']);
-    $senha = $_POST['senha'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $login = trim($_POST['email'] ?? '');
+    $senha = trim($_POST['senha'] ?? '');
 
-    $sql = "SELECT * FROM usuarios 
-            WHERE (email = '$login' OR cpf = '$login') 
-            AND senha = '$senha'";
-    $result = $conn->query($sql);
+    if ($login !== '' && $senha !== '') {
 
-    if ($result->num_rows == 1) {
-        $user = $result->fetch_assoc();
-        $_SESSION['usuario_id']   = $user['id'];
-        $_SESSION['nome_usuario'] = $user['nome'];
-        $_SESSION['tipo_usuario'] = $user['tipo'];
-        header("Location: index.php");
-        exit;
+        // 1) Paciente ou administrador (tabela usuarios) — por e-mail ou CPF
+        $cpfBusca = preg_replace('/\D/', '', $login);
+        $stmt = $conn->prepare("SELECT id, nome, senha, tipo FROM usuarios WHERE email = ? OR (cpf IS NOT NULL AND cpf = ?)");
+        $stmt->bind_param("ss", $login, $cpfBusca);
+        $stmt->execute();
+        $usuario = $stmt->get_result()->fetch_assoc();
+
+        if ($usuario && conferirSenha($senha, $usuario['senha'])) {
+            session_regenerate_id(true);
+            $_SESSION = [];
+            $_SESSION['usuario_id']   = $usuario['id'];
+            $_SESSION['nome_usuario'] = $usuario['nome'];
+            $_SESSION['tipo_usuario'] = $usuario['tipo'];
+
+            if ($usuario['tipo'] === 'admin') {
+                header("Location: admin/dashboard.php");
+            } else {
+                header("Location: index.php");
+            }
+            exit();
+        }
+
+        // 2) Médico (tabela medicos) — por e-mail ou CRM
+        $stmt = $conn->prepare("SELECT id, nome, senha FROM medicos WHERE email = ? OR crm = ?");
+        $stmt->bind_param("ss", $login, $login);
+        $stmt->execute();
+        $medico = $stmt->get_result()->fetch_assoc();
+
+        if ($medico && conferirSenha($senha, $medico['senha'])) {
+            session_regenerate_id(true);
+            $_SESSION = [];
+            $_SESSION['medico_id']    = $medico['id'];
+            $_SESSION['nome_usuario'] = $medico['nome'];
+            $_SESSION['tipo_usuario'] = 'medico';
+            header("Location: medico/dashboard.php");
+            exit();
+        }
+
+        $erro = "E-mail ou senha inválidos.";
     } else {
-        $erro = "E-mail/CPF ou senha inválidos.";
+        $erro = "Preencha todos os campos.";
     }
-    $conn->close();
 }
 ?>
 <!DOCTYPE html>
@@ -36,48 +63,46 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 </head>
-<body class="bg-[#FAF9F6] h-screen flex items-center justify-center font-sans antialiased">
-    <div class="bg-white p-8 rounded-3xl border border-[#E6D5B8] shadow-xl max-w-md w-full space-y-6 mx-4">
-        <div class="text-center space-y-3 flex flex-col items-center">
-            <img src="logo_lac.png" alt="LAC Centro Médico" class="h-14 w-auto object-contain mb-1">
-            <h1 class="text-2xl font-serif text-[#3E352E]">Portal do Paciente</h1>
-            <p class="text-sm text-stone-500">Entre com suas credenciais para continuar</p>
-        </div>
+<body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen flex items-center justify-center p-4">
 
-        <?php if($erro): ?>
-            <div class="bg-red-50 text-red-700 p-3.5 rounded-xl text-sm border border-red-200 flex items-center gap-2">
-                <i class="fa-solid fa-circle-exclamation"></i> <?php echo $erro; ?>
-            </div>
-        <?php endif; ?>
-
-        <form method="POST" class="space-y-4">
-            <div>
-                <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">E-mail ou CPF</label>
-                <input type="text" name="login" required
-                       class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]"
-                       placeholder="seu@email.com ou 000.000.000-00">
-            </div>
-            <div>
-                <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Senha</label>
-                <input type="password" name="senha" required
-                       class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]"
-                       placeholder="••••••••">
-            </div>
-
-            <div class="flex justify-end">
-                <a href="esqueci_senha.php" class="text-xs text-[#8C6D36] hover:underline font-medium">
-                    Esqueci minha senha
-                </a>
-            </div>
-
-            <button type="submit" class="w-full bg-[#3E352E] hover:bg-[#5A4A3A] text-white py-3.5 rounded-xl font-medium transition shadow-sm">
-                Acessar Sistema
-            </button>
-        </form>
-
-        <div class="border-t border-stone-100 pt-4 text-center">
-            <p class="text-xs text-stone-400">Dica de acesso: <span class="text-stone-600 font-medium">joao@email.com</span> / Senha: <span class="text-stone-600 font-medium">123456</span></p>
-        </div>
+<div class="max-w-md w-full bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
+    <div class="text-center space-y-2">
+        <img src="logo_lac.png" alt="LAC Centro Médico" class="h-12 mx-auto object-contain">
+        <h1 class="text-2xl font-serif text-[#3E352E]">Acesse sua conta</h1>
+        <p class="text-xs text-stone-500">Entre com suas credenciais para continuar</p>
     </div>
+
+    <?php if (!empty($erro)): ?>
+        <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+            <i class="fa-solid fa-circle-exclamation mr-1"></i> <?php echo h($erro); ?>
+        </div>
+    <?php endif; ?>
+
+    <form action="login.php" method="POST" class="space-y-4">
+        <div>
+            <label class="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">E-mail, CPF ou CRM</label>
+            <input type="text" name="email" required 
+                   class="w-full px-4 py-3 rounded-xl border border-stone-300 focus:outline-none focus:border-[#8C6D36] text-sm bg-[#FAF9F6]">
+        </div>
+
+        <div>
+            <label class="block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1">Senha</label>
+            <input type="password" name="senha" required 
+                   class="w-full px-4 py-3 rounded-xl border border-stone-300 focus:outline-none focus:border-[#8C6D36] text-sm bg-[#FAF9F6]">
+        </div>
+
+        <button type="submit" 
+                class="w-full bg-[#3E352E] text-white py-3 rounded-xl font-medium hover:bg-[#5A4A3A] transition shadow-sm text-sm">
+            Entrar
+        </button>
+    </form>
+
+    <div class="text-center">
+        <a href="esqueci_senha.php" class="text-xs text-[#8C6D36] hover:underline font-medium">
+            Esqueci minha senha
+        </a>
+    </div>
+</div>
+
 </body>
 </html>
