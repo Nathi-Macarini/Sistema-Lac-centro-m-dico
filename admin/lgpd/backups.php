@@ -288,7 +288,7 @@ foreach ($backups as $b) {
                                 </td>
                                 <td class="px-4 py-3 text-right whitespace-nowrap">
                                     <?php if ($existe && $b['status'] === 'sucesso'): ?>
-                                        <a href="../../<?php echo htmlspecialchars($b['arquivo']); ?>" download
+                                        <a href="download_backup.php?id=<?php echo (int)$b['id']; ?>"
                                            class="inline-flex items-center gap-1 text-xs font-medium bg-[#3E352E] text-white px-3 py-1.5 rounded-lg hover:bg-[#5A4A3A] transition">
                                             <i class="fa-solid fa-download"></i>
                                         </a>
