@@ -10,8 +10,9 @@ if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'ad
     exit;
 }
 
+$nomeAdmin = $_SESSION['nome_usuario'] ?? 'Administrador';
 // ============================================================
-// 2. PEGA O ID (ANTES DE QUALQUER POST!)
+// 2. PEGA O ID (ANTES DE QUALQUER POST)
 // ============================================================
 $id = (int)($_GET['id'] ?? 0);
 if ($id <= 0) {
@@ -20,9 +21,9 @@ if ($id <= 0) {
 }
 
 // ============================================================
-// 3. BUSCA O MÉDICO (também antes dos POSTs)
+// 3. BUSCA O MÉDICO
 // ============================================================
-$st = $conn->prepare("SELECT id, nome, crm, especialidade, email, telefone FROM medicos WHERE id = ?");
+$st = $conn->prepare("SELECT id, nome, crm, rqe, especialidade, tipo_atendimento, ativo, email, telefone FROM medicos WHERE id = ?");
 $st->bind_param("i", $id);
 $st->execute();
 $m = $st->get_result()->fetch_assoc();
@@ -45,7 +46,7 @@ if (!in_array($m['especialidade'], $especialidades, true)) {
 }
 
 // ============================================================
-// AÇÃO: REDEFINIR SENHA (COM SENHA CUSTOMIZADA)
+// 5. AÇÃO: REDEFINIR SENHA
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefinir_senha') {
     $novaSenha = trim($_POST['nova_senha'] ?? '');
@@ -95,20 +96,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefin
 }
 
 // ============================================================
-// 6. AÇÃO: SALVAR EDIÇÃO DOS DADOS DO MÉDICO
+// 6. AÇÃO: SALVAR EDIÇÃO DOS DADOS DO MÉDICO (sem senha)
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar') {
-    $nome          = trim($_POST['nome'] ?? '');
-    $crm           = trim($_POST['crm'] ?? '');
-    $especialidade = trim($_POST['especialidade'] ?? '');
-    $email         = trim($_POST['email'] ?? '');
-    $telefone      = trim($_POST['telefone'] ?? '');
-    $novaSenha     = trim($_POST['senha'] ?? '');
+    $nome            = trim($_POST['nome'] ?? '');
+    $crm             = trim($_POST['crm'] ?? '');
+    $rqe             = trim($_POST['rqe'] ?? '');
+    $especialidade   = trim($_POST['especialidade'] ?? '');
+    $tipoAtendimento = $_POST['tipo_atendimento'] ?? 'particular';
+    $email           = trim($_POST['email'] ?? '');
+    $telefone        = trim($_POST['telefone'] ?? '');
+    $ativo           = !empty($_POST['ativo']) ? 1 : 0;
+
+    // Valida tipo de atendimento
+    if (!in_array($tipoAtendimento, ['particular', 'sus', 'ambos'], true)) {
+        $tipoAtendimento = 'particular';
+    }
 
     if ($nome === '' || $crm === '' || $especialidade === '' || $email === '') {
         $erro = "Preencha Nome, CRM, Especialidade e E-mail.";
-    } elseif ($novaSenha !== '' && strlen($novaSenha) < 6) {
-        $erro = "A nova senha deve ter pelo menos 6 caracteres.";
     } else {
         // Verifica duplicidade de CRM ou e-mail (exceto o próprio médico)
         $st = $conn->prepare("SELECT id FROM medicos WHERE (crm = ? OR email = ?) AND id <> ?");
@@ -119,14 +125,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
         if ($st->num_rows > 0) {
             $erro = "Outro médico já usa esse CRM ou e-mail.";
         } else {
-            if ($novaSenha !== '') {
-                $hash = password_hash($novaSenha, PASSWORD_DEFAULT);
-                $up = $conn->prepare("UPDATE medicos SET nome=?, crm=?, especialidade=?, email=?, telefone=?, senha=? WHERE id=?");
-                $up->bind_param("ssssssi", $nome, $crm, $especialidade, $email, $telefone, $hash, $id);
-            } else {
-                $up = $conn->prepare("UPDATE medicos SET nome=?, crm=?, especialidade=?, email=?, telefone=? WHERE id=?");
-                $up->bind_param("sssssi", $nome, $crm, $especialidade, $email, $telefone, $id);
-            }
+            $rqeEsc = $rqe !== '' ? $rqe : null;
+
+            $up = $conn->prepare("UPDATE medicos SET nome=?, crm=?, rqe=?, especialidade=?, tipo_atendimento=?, ativo=?, email=?, telefone=? WHERE id=?");
+$up->bind_param("sssssissi", $nome, $crm, $rqeEsc, $especialidade, $tipoAtendimento, $ativo, $email, $telefone, $id);
 
             if ($up->execute()) {
                 header("Location: editar_medico.php?id={$id}&editado=1");
@@ -138,12 +140,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
 
     // Atualiza os dados na tela em caso de erro
     $m = [
-        'id'            => $id,
-        'nome'          => $nome,
-        'crm'           => $crm,
-        'especialidade' => $especialidade,
-        'email'         => $email,
-        'telefone'      => $telefone,
+        'id'               => $id,
+        'nome'             => $nome,
+        'crm'              => $crm,
+        'rqe'              => $rqe,
+        'especialidade'    => $especialidade,
+        'tipo_atendimento' => $tipoAtendimento,
+        'ativo'            => $ativo,
+        'email'            => $email,
+        'telefone'         => $telefone,
     ];
     if (!in_array($m['especialidade'], $especialidades, true)) {
         $especialidades[] = $m['especialidade'];
@@ -174,18 +179,24 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
 </head>
 <body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen">
 
-    <!-- Header (idêntico ao editar_usuario.php) -->
+    <!-- Header -->
     <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
+                <img src="../logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
                 <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
-                    Área do Administrador
+                    Painel Administrativo
                 </span>
             </div>
-            <a href="listar_medicos.php" class="text-xs text-stone-600 hover:text-[#8C6D36] font-medium transition flex items-center">
-                <i class="fa-solid fa-arrow-left mr-1"></i> Voltar à lista
-            </a>
+            <div class="flex items-center space-x-4">
+                <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
+                    <i class="fa-solid fa-arrow-left"></i> <span class="hidden sm:inline">Voltar ao Painel</span>
+                </a>
+                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo htmlspecialchars($nomeAdmin); ?></span>
+                <a href="../logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
+                </a>
+            </div>
         </div>
     </header>
 
@@ -224,11 +235,20 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                     <input type="text" name="nome" required value="<?php echo h($m['nome']); ?>" class="<?php echo $campo; ?>">
                 </div>
 
+                <!-- Linha: CRM + RQE -->
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                         <label class="<?php echo $rotulo; ?>">CRM *</label>
                         <input type="text" name="crm" required value="<?php echo h($m['crm']); ?>" class="<?php echo $campo; ?>">
                     </div>
+                    <div>
+                        <label class="<?php echo $rotulo; ?>">RQE</label>
+                        <input type="text" name="rqe" value="<?php echo h($m['rqe'] ?? ''); ?>" class="<?php echo $campo; ?>" placeholder="Ex: 98765">
+                    </div>
+                </div>
+
+                <!-- Linha: Especialidade + Tipo de Atendimento -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                         <label class="<?php echo $rotulo; ?>">Especialidade *</label>
                         <select name="especialidade" required class="<?php echo $campo; ?>">
@@ -239,8 +259,31 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                             <?php endforeach; ?>
                         </select>
                     </div>
+                    <div>
+                        <label class="<?php echo $rotulo; ?>">Tipo de Atendimento *</label>
+                        <select name="tipo_atendimento" required class="<?php echo $campo; ?>">
+                            <option value="particular" <?php echo ($m['tipo_atendimento'] ?? 'particular') === 'particular' ? 'selected' : ''; ?>>Particular</option>
+                            <option value="sus" <?php echo ($m['tipo_atendimento'] ?? '') === 'sus' ? 'selected' : ''; ?>>SUS</option>
+                            <option value="ambos" <?php echo ($m['tipo_atendimento'] ?? '') === 'ambos' ? 'selected' : ''; ?>>Particular + SUS</option>
+                        </select>
+                    </div>
                 </div>
 
+                                <!-- Toggle: Médico ativo/inativo -->
+                <div class="bg-[#F9F4EC] border border-[#E6D5B8] p-4 rounded-xl flex items-start gap-3">
+                    <input type="checkbox" name="ativo" id="ativo" value="1"
+                           <?php echo (($m['ativo'] ?? 1) ? 'checked' : ''); ?>
+                           class="mt-1 w-5 h-5 accent-[#8C6D36] cursor-pointer">
+                    <label for="ativo" class="cursor-pointer flex-1">
+                        <span class="block text-sm font-bold text-[#3E352E]">Médico ativo no sistema</span>
+                        <span class="block text-xs text-stone-500 mt-0.5">
+                            Médicos inativos <strong>não conseguem fazer login</strong> nem aparecem nas listagens de teleconsulta.
+                            Desative em vez de excluir, para preservar o histórico de atendimentos.
+                        </span>
+                    </label>
+                </div>
+                
+                <!-- Linha: E-mail + Telefone -->
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                         <label class="<?php echo $rotulo; ?>">E-mail (login) *</label>
@@ -252,15 +295,11 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                     </div>
                 </div>
 
-                <div>
-                    <label class="<?php echo $rotulo; ?>">Nova senha (deixe em branco para manter a atual)</label>
-                    <input type="text" name="senha" minlength="6" class="<?php echo $campo; ?>" placeholder="Mínimo 6 caracteres">
-                </div>
-
                 <div class="bg-[#F9F4EC] border border-[#E6D5B8] p-3.5 rounded-xl text-xs text-[#5A4A3A] flex items-start gap-2">
                     <i class="fa-solid fa-circle-info mt-0.5"></i>
                     <span>
                         <strong>CRM e e-mail</strong> são usados para login. Alterar pode exigir que o médico reaprenda as credenciais.
+                        Para trocar a senha do médico, use o bloco <strong>"Redefinir senha"</strong> abaixo.
                     </span>
                 </div>
 
@@ -328,7 +367,6 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 </div>
             </form>
         </section>
-
     </main>
 </body>
 </html>

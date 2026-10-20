@@ -3,6 +3,8 @@
 // BOOTSTRAP - Carregado por TODOS os arquivos do sistema
 // Responsável por: autoload, sessão, timezone e AUTENTICAÇÃO
 // ============================================================
+require_once __DIR__ . '/src/Env.php';
+\App\Env::load(__DIR__ . '/.env');
 
 require_once __DIR__ . '/vendor/autoload.php';
 
@@ -10,11 +12,64 @@ if (!defined('APP_ROOT')) {
     define('APP_ROOT', __DIR__);
 }
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+require_once __DIR__ . '/src/Env.php';
+\App\Env::load(__DIR__ . '/.env');
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+if (!defined('APP_ROOT')) {
+    define('APP_ROOT', __DIR__);
 }
 
-date_default_timezone_set('America/Sao_Paulo');
+// 👇 NOVO: caminho base da URL do projeto
+if (!defined('APP_BASE_PATH')) {
+    $docRoot = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT'] ?? '') ?: '');
+    $appRoot = str_replace('\\', '/', APP_ROOT);
+
+    if ($docRoot !== '' && str_starts_with($appRoot, $docRoot)) {
+        $basePath = substr($appRoot, strlen($docRoot));
+        $basePath = '/' . trim($basePath, '/');
+        if ($basePath === '/') $basePath = '';
+    } else {
+        $basePath = '';
+    }
+    define('APP_BASE_PATH', $basePath);
+}
+
+// ============================================================
+// SESSÃO SEGURA (LGPD Art. 46)
+// ============================================================
+if (session_status() === PHP_SESSION_NONE) {
+    // Detecta HTTPS
+    $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || ((int)($_SERVER['SERVER_PORT'] ?? 80) === 443)
+            || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+
+    // Configurações de cookie de sessão
+    session_set_cookie_params([
+        'lifetime' => 0,           // expira ao fechar o navegador
+        'path'     => '/',
+        'domain'   => '',
+        'secure'   => $isHttps,    // só HTTPS em produção (localhost funciona em HTTP)
+        'httponly' => true,        // JS não acessa o cookie
+        'samesite' => 'Strict',    // protege contra CSRF
+    ]);
+
+    // Endurecimento adicional
+    ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.cookie_httponly', '1');
+
+    session_start();
+
+    // Regenera ID periodicamente (a cada 30 min)
+    if (!isset($_SESSION['_last_regenerate'])) {
+        $_SESSION['_last_regenerate'] = time();
+    } elseif (time() - $_SESSION['_last_regenerate'] > 1800) {
+        session_regenerate_id(true);
+        $_SESSION['_last_regenerate'] = time();
+    }
+}
 
 // ============================================================
 // PROTEÇÃO GLOBAL DE AUTENTICAÇÃO

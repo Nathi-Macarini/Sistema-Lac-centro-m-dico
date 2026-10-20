@@ -1,6 +1,11 @@
 <?php
 require_once __DIR__ . '/../bootstrap.php';
 require __DIR__ . '/../conexao.php';
+
+use App\Crypto;
+use App\CPF;
+use App\LGPD;
+
 $medico = exigirMedico($conn);
 verificarEsquema($conn);
 require __DIR__ . '/layout.php';
@@ -11,11 +16,31 @@ $embed = !empty($_GET['embed']);
 $pid = (int)($_GET['id'] ?? 0);
 $consultaId = (int)($_GET['consulta'] ?? 0);
 
-$st = $conn->prepare("SELECT id, nome, email, cpf, telefone, data_nascimento, endereco FROM usuarios WHERE id = ? AND tipo = 'comum'");
+$st = $conn->prepare("SELECT id, nome, email, cpf, cpf_enc, cpf_ultimos4, telefone, data_nascimento, endereco FROM usuarios WHERE id = ? AND tipo = 'comum'");
 $st->bind_param('i', $pid);
 $st->execute();
 $p = $st->get_result()->fetch_assoc();
 if (!$p) { header("Location: pacientes.php"); exit; }
+
+// ============================================================
+// LGPD: registra o acesso ao prontuário
+// ============================================================
+// Registra o acesso (deduplicado: 1 registro por médico/paciente/30min)
+LGPD::registrarAcessoProntuario(
+    $conn,
+    $pid,
+    (int)$medico['id'],
+    null,
+    'visualizou_prontuario'
+);
+
+// Decifra CPF para exibição
+$cpfPaciente = null;
+if (!empty($p['cpf_enc'])) {
+    $cpfPaciente = CPF::descriptografar($p['cpf_enc']);
+} elseif (!empty($p['cpf'])) {
+    $cpfPaciente = $p['cpf'];
+}
 
 $msg = ''; $tipoMsg = '';
 
@@ -24,15 +49,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'ficha')
     $campos = ['sexo','tipo_sanguineo','alergias','doencas_cronicas','medicamentos_uso','cirurgias_previas','historico_familiar','habitos_vida','observacoes'];
     $v = [];
     foreach ($campos as $k) { $t = trim($_POST[$k] ?? ''); $v[$k] = $t === '' ? null : $t; }
+
+    // Campos que serão criptografados (null se vazio)
+    $alergiasEnc = $v['alergias']          !== null ? Crypto::encrypt($v['alergias'])          : null;
+    $doencasEnc  = $v['doencas_cronicas']  !== null ? Crypto::encrypt($v['doencas_cronicas'])  : null;
+    $medsEnc     = $v['medicamentos_uso']  !== null ? Crypto::encrypt($v['medicamentos_uso'])  : null;
+
     $mid = (int)$medico['id'];
     $st = $conn->prepare(
-        "INSERT INTO prontuarios (paciente_id, sexo, tipo_sanguineo, alergias, doencas_cronicas, medicamentos_uso, cirurgias_previas, historico_familiar, habitos_vida, observacoes, atualizado_por)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)
-         ON DUPLICATE KEY UPDATE sexo=VALUES(sexo), tipo_sanguineo=VALUES(tipo_sanguineo), alergias=VALUES(alergias), doencas_cronicas=VALUES(doencas_cronicas),
-            medicamentos_uso=VALUES(medicamentos_uso), cirurgias_previas=VALUES(cirurgias_previas), historico_familiar=VALUES(historico_familiar),
-            habitos_vida=VALUES(habitos_vida), observacoes=VALUES(observacoes), atualizado_por=VALUES(atualizado_por)");
-    $st->bind_param('isssssssssi', $pid, $v['sexo'], $v['tipo_sanguineo'], $v['alergias'], $v['doencas_cronicas'], $v['medicamentos_uso'],
-                    $v['cirurgias_previas'], $v['historico_familiar'], $v['habitos_vida'], $v['observacoes'], $mid);
+        "INSERT INTO prontuarios
+            (paciente_id, sexo, tipo_sanguineo, alergias, doencas_cronicas, medicamentos_uso,
+             cirurgias_previas, historico_familiar, habitos_vida, observacoes,
+             alergias_enc, doencas_cronicas_enc, medicamentos_uso_enc,
+             atualizado_por)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         ON DUPLICATE KEY UPDATE
+            sexo=VALUES(sexo),
+            tipo_sanguineo=VALUES(tipo_sanguineo),
+            alergias=VALUES(alergias),
+            doencas_cronicas=VALUES(doencas_cronicas),
+            medicamentos_uso=VALUES(medicamentos_uso),
+            cirurgias_previas=VALUES(cirurgias_previas),
+            historico_familiar=VALUES(historico_familiar),
+            habitos_vida=VALUES(habitos_vida),
+            observacoes=VALUES(observacoes),
+            alergias_enc=VALUES(alergias_enc),
+            doencas_cronicas_enc=VALUES(doencas_cronicas_enc),
+            medicamentos_uso_enc=VALUES(medicamentos_uso_enc),
+            atualizado_por=VALUES(atualizado_por)"
+    );
+    $st->bind_param(
+        'issssssssssssi',
+        $pid, $v['sexo'], $v['tipo_sanguineo'], $v['alergias'], $v['doencas_cronicas'], $v['medicamentos_uso'],
+        $v['cirurgias_previas'], $v['historico_familiar'], $v['habitos_vida'], $v['observacoes'],
+        $alergiasEnc, $doencasEnc, $medsEnc,
+        $mid
+    );
     if ($st->execute()) { $msg = "Ficha do prontuário atualizada."; $tipoMsg = 'sucesso'; }
     else { $msg = "Erro ao salvar a ficha: " . $conn->error; $tipoMsg = 'erro'; }
 }
@@ -48,6 +100,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'evoluca
     $conduta = $txt('conduta'); $presc = $txt('prescricao'); $exames = $txt('exames_solicitados'); $ret = $txt('retorno');
     $cons = (int)($_POST['consulta_id'] ?? 0) ?: null;
     $mid = (int)$medico['id'];
+
+    // Criptografa os campos sensíveis
+    $diagEnc  = $diag  !== null ? Crypto::encrypt($diag)  : null;
+    $prescEnc = $presc !== null ? Crypto::encrypt($presc) : null;
+
     if ($cons) {
         $chk = $conn->prepare("SELECT id FROM consultas WHERE id = ? AND usuario_id = ? AND medico_id = ?");
         $chk->bind_param('iii', $cons, $pid, $mid);
@@ -59,15 +116,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'evoluca
         $msg = "Preencha ao menos a queixa principal, o diagnóstico ou a conduta."; $tipoMsg = 'erro';
     } else {
         $st = $conn->prepare(
-            "INSERT INTO atendimentos (paciente_id, medico_id, consulta_id, queixa_principal, historia_doenca, exame_fisico, pressao_arterial, freq_cardiaca,
-                                       temperatura, saturacao, peso_kg, altura_cm, diagnostico, cid10, conduta, prescricao, exames_solicitados, retorno)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-        $st->bind_param('iiissssididissssss', $pid, $mid, $cons, $queixa, $hda, $exame, $pa, $fc, $temp, $sat, $peso, $alt, $diag, $cid, $conduta, $presc, $exames, $ret);
+            "INSERT INTO atendimentos
+                (paciente_id, medico_id, consulta_id, queixa_principal, historia_doenca, exame_fisico,
+                 pressao_arterial, freq_cardiaca, temperatura, saturacao, peso_kg, altura_cm,
+                 diagnostico, cid10, conduta, prescricao, exames_solicitados, retorno,
+                 diagnostico_enc, prescricao_enc)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        );
+        $st->bind_param(
+            'iiissssididissssssss',
+            $pid, $mid, $cons, $queixa, $hda, $exame,
+            $pa, $fc, $temp, $sat, $peso, $alt,
+            $diag, $cid, $conduta, $presc, $exames, $ret,
+            $diagEnc, $prescEnc
+        );
+
         if ($st->execute()) {
             $msg = "Evolução registrada no prontuário."; $tipoMsg = 'sucesso';
             if (!empty($_POST['finalizar_consulta']) && $cons) {
-                $u = $conn->prepare("UPDATE consultas SET status='Realizada' WHERE id = ? AND medico_id = ?");
-                $u->bind_param('ii', $cons, $mid);
+                $novoStatus = 'Paciente atendido';
+                $u = $conn->prepare("UPDATE consultas SET status = ? WHERE id = ? AND medico_id = ?");
+                $u->bind_param('sii', $novoStatus, $cons, $mid);
                 $u->execute();
             }
         } else { $msg = "Erro ao registrar a evolução: " . $conn->error; $tipoMsg = 'erro'; }
@@ -79,7 +148,18 @@ $st = $conn->prepare("SELECT * FROM prontuarios WHERE paciente_id = ?");
 $st->bind_param('i', $pid);
 $st->execute();
 $f = $st->get_result()->fetch_assoc() ?: [];
-$ficha = fn($k) => $f[$k] ?? '';
+
+// Decifra os campos sensíveis da ficha
+$ficha = function ($k) use ($f) {
+    if (empty($f)) return '';
+    // Se existe versão criptografada, usa ela
+    $kEnc = $k . '_enc';
+    if (in_array($k, ['alergias', 'doencas_cronicas', 'medicamentos_uso'], true) && !empty($f[$kEnc])) {
+        $dec = Crypto::decrypt($f[$kEnc]);
+        if ($dec !== null) return $dec;
+    }
+    return $f[$k] ?? '';
+};
 
 $st = $conn->prepare(
     "SELECT a.*, m.nome AS medico_nome, m.crm, m.especialidade
@@ -88,6 +168,19 @@ $st = $conn->prepare(
 $st->bind_param('i', $pid);
 $st->execute();
 $evolucoes = $st->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// Decifra diagnóstico/prescrição das evoluções
+foreach ($evolucoes as &$e) {
+    if (!empty($e['diagnostico_enc'])) {
+        $dec = Crypto::decrypt($e['diagnostico_enc']);
+        if ($dec !== null) $e['diagnostico'] = $dec;
+    }
+    if (!empty($e['prescricao_enc'])) {
+        $dec = Crypto::decrypt($e['prescricao_enc']);
+        if ($dec !== null) $e['prescricao'] = $dec;
+    }
+}
+unset($e);
 
 $st = $conn->prepare(
     "SELECT c.*, m.nome AS medico_nome FROM consultas c LEFT JOIN medicos m ON m.id = c.medico_id
@@ -132,7 +225,7 @@ cabecalho('Prontuário - ' . $p['nome'], 'pacientes', $embed);
         <?php endif; ?>
     </div>
     <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 text-sm">
-        <div><dt class="text-xs font-bold text-stone-500 uppercase">CPF</dt><dd><?php echo $p['cpf'] ? h(formatarCpf($p['cpf'])) : '—'; ?></dd></div>
+        <div><dt class="text-xs font-bold text-stone-500 uppercase">CPF</dt><dd><?php echo $cpfPaciente ? h(CPF::formatar($cpfPaciente)) : '—'; ?></dd></div>
         <div><dt class="text-xs font-bold text-stone-500 uppercase">Telefone</dt><dd><?php echo h($p['telefone'] ?: '—'); ?></dd></div>
         <div><dt class="text-xs font-bold text-stone-500 uppercase">E-mail</dt><dd class="break-all"><?php echo h($p['email'] ?: '—'); ?></dd></div>
         <div><dt class="text-xs font-bold text-stone-500 uppercase">Tipo sanguíneo</dt><dd><?php echo h($ficha('tipo_sanguineo') ?: '—'); ?></dd></div>
@@ -177,8 +270,8 @@ cabecalho('Prontuário - ' . $p['nome'], 'pacientes', $embed);
                 <div><label class="<?php echo $label; ?>">Exames solicitados</label><textarea name="exames_solicitados" rows="2" class="<?php echo $input; ?>"></textarea></div>
                 <div><label class="<?php echo $label; ?>">Retorno</label><input name="retorno" placeholder="Ex.: em 15 dias, se persistirem os sintomas" class="<?php echo $input; ?>"></div>
 
-                <?php if (!$embed && $consultaAtual && $consultaAtual['status'] !== 'Realizada'): ?>
-                    <label class="flex items-center gap-2 text-sm text-stone-700"><input type="checkbox" name="finalizar_consulta" value="1" checked> Marcar a consulta como <strong>Realizada</strong> ao salvar</label>
+                <?php if (!$embed && $consultaAtual && $consultaAtual['status'] !== 'Paciente atendido'): ?>
+                    <label class="flex items-center gap-2 text-sm text-stone-700"><input type="checkbox" name="finalizar_consulta" value="1" checked> Marcar a consulta como <strong>Paciente atendido</strong> ao salvar</label>
                 <?php endif; ?>
                 <div class="flex justify-end"><button type="submit" class="bg-[#3E352E] hover:bg-[#5A4A3A] text-white px-6 py-3 rounded-xl text-sm font-medium transition shadow-sm"><i class="fa-solid fa-floppy-disk mr-1"></i> Salvar evolução</button></div>
             </form>
@@ -222,7 +315,7 @@ cabecalho('Prontuário - ' . $p['nome'], 'pacientes', $embed);
     <div class="<?php echo $embed ? '' : 'xl:col-span-2'; ?> space-y-8">
         <?php if (!$embed): ?>
         <section class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-4">
-            <h3 class="text-xl font-serif text-[#3E352E]"><i class="fa-solid fa-file-medical text-[#8C6D36] mr-1"></i> Receita e atestado</h3>
+            <h3 class="text-xl font-serif text-[#3E352E]"><i class="fa-solid fa-file-medical text-[#8C6D36] mr-1"></i> Receita, atestado e declaração</h3>
             <?php painelDocumentos($pid, $consultaAtual ? (int)$consultaAtual['id'] : 0, '../'); ?>
         </section>
         <?php endif; ?>

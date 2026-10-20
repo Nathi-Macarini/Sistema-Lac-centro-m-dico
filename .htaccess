@@ -1,0 +1,49 @@
+# ============================================================
+# SEGURANÇA — LGPD Art. 46
+# ============================================================
+
+# ---------- Headers de segurança ----------
+<IfModule mod_headers.c>
+    # Previne sniffing de MIME
+    Header always set X-Content-Type-Options "nosniff"
+    
+    # Previne clickjacking
+    Header always set X-Frame-Options "SAMEORIGIN"
+    
+    # Controla vazamento de referrer
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    
+    # Restringe APIs do navegador (câmera/mic só no mesmo domínio)
+    Header always set Permissions-Policy "geolocation=(), microphone=(self), camera=(self), payment=()"
+    
+    # Remove assinatura do servidor
+    Header unset X-Powered-By
+    Header unset Server
+    
+    # HSTS — DESCOMENTE EM PRODUÇÃO (após HTTPS estável)
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    
+    # CSP básico — bloqueia inline scripts não autorizados
+    # Descomente com cuidado, pode quebrar Tailwind CDN
+    # Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' https://cdnjs.cloudflare.com"
+</IfModule>
+
+# ---------- Forçar HTTPS — DESCOMENTE EM PRODUÇÃO ----------
+# <IfModule mod_rewrite.c>
+#     RewriteEngine On
+#     RewriteCond %{HTTPS} off
+#     RewriteCond %{HTTP:X-Forwarded-Proto} !https
+#     RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+# </IfModule>
+
+# ---------- Bloquear acesso a arquivos sensíveis ----------
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\.(env|log|sql|bak|ini)$">
+    Require all denied
+</FilesMatch>
+
+# ---------- Bloquear listagem de diretórios ----------
+Options -Indexes

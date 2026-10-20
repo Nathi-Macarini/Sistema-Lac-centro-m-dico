@@ -2,9 +2,13 @@
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/conexao.php';
 require_once __DIR__ . '/medico/painel_documentos.php';
+require_once __DIR__ . '/includes/termo_texto.php';
+require_once __DIR__ . '/includes/teste_av.php';
 
 use App\ActivityLogger;
 use App\TiposAtendimento;
+use App\StatusConsulta;
+use App\Crypto;
 
 verificarEsquema($conn);
 
@@ -14,6 +18,9 @@ $cid    = (int)($_GET['consulta'] ?? 0);
 $voltar = souMedico() ? 'medico/dashboard.php' : 'index.php';
 $acesso = acessoConsulta($conn, $cid);
 
+// Sempre inicializa antes do if
+$termoPendente = false;
+
 if (!$acesso) {
     http_response_code(403);
     $erro = "Sala não encontrada ou você não participa desta consulta.";
@@ -21,49 +28,31 @@ if (!$acesso) {
     $c = $acesso['consulta'];
     $papel = $acesso['papel'];
 
-    if ($papel === 'medico' && $c['status'] === 'Agendada') {
-        $up = $conn->prepare("UPDATE consultas SET status = 'Em andamento' WHERE id = ? AND medico_id = ? AND status = 'Agendada'");
-        $mid = (int)$c['medico_id']; $cidUp = (int)$c['id'];
-        $up->bind_param('ii', $cidUp, $mid);
-        $up->execute();
-
-        if ($up->affected_rows > 0) {
-            $ehPA_up = ($c['tipo'] ?? '') === 'pronto_atendimento';
-            $produto = $ehPA_up ? TiposAtendimento::LAC_ATENDE : TiposAtendimento::LAC_TELEATENDIMENTO;
-            $nomeProduto = $ehPA_up ? 'LAC Atende' : 'LAC Teleatendimento';
-
-            ActivityLogger::log(
-                action: 'atendimento_iniciado',
-                entity: 'consulta',
-                entityId: $cidUp,
-                description: "{$nomeProduto}: Dr(a). {$_SESSION['nome_usuario']} iniciou atendimento com {$c['paciente_nome']}",
-                metadata: [
-                    'consulta_id'    => $cidUp,
-                    'medico_id'      => $mid,
-                    'medico_nome'    => $_SESSION['nome_usuario'] ?? null,
-                    'paciente_id'    => (int)$c['usuario_id'],
-                    'paciente_nome'  => $c['paciente_nome'] ?? null,
-                    'especialidade'  => $c['especialidade'] ?? null,
-                    'modalidade'     => $c['modalidade'] ?? null,
-                    'tipo_consulta'  => $c['tipo'] ?? null,
-                    'iniciado_em'    => date('Y-m-d H:i:s'),
-                ],
-                tags: [$produto, TiposAtendimento::INICIADO, TiposAtendimento::EM_ANDAMENTO]
-            );
-        }
-        $c['status'] = 'Em andamento';
+    // O log de "atendimento_iniciado" é feito pela API (sinal.php) quando o médico entra.
+    if ($papel === 'medico' && $c['status'] === StatusConsulta::AGENDADA) {
+        $c['status'] = StatusConsulta::EM_ATENDIMENTO;
     }
 
     $ehPA = ($c['tipo'] ?? '') === 'pronto_atendimento';
-    $encerrada = !in_array($c['status'], ['Agendada', 'Em andamento'], true);
+    $encerrada = !in_array($c['status'], StatusConsulta::ATIVAS, true);
+
+    // ✅ Verifica se o paciente já aceitou o termo UMA VEZ (vale para todas as consultas futuras)
+    if ($papel === 'paciente' && !$ehPA && !$encerrada) {
+        if (!usuarioAceitouTeleconsulta($conn, (int)$c['usuario_id'])) {
+            $termoPendente = true;
+        }
+    }
 
     $alergias = '';
     if ($papel === 'medico') {
         $pid = (int)$c['usuario_id'];
-        $q = $conn->prepare("SELECT alergias FROM prontuarios WHERE paciente_id = ?");
+        $q = $conn->prepare("SELECT alergias, alergias_enc FROM prontuarios WHERE paciente_id = ?");
         $q->bind_param('i', $pid);
         $q->execute();
-        $alergias = $q->get_result()->fetch_assoc()['alergias'] ?? '';
+        $row = $q->get_result()->fetch_assoc();
+        $alergias = $row['alergias_enc']
+            ? (Crypto::decrypt($row['alergias_enc']) ?? '')
+            : ($row['alergias'] ?? '');
     }
 }
 ?>
@@ -82,7 +71,7 @@ if (!$acesso) {
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
         <img src="logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
         <a href="<?php echo $voltar; ?>" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
-            <i class="fa-solid fa-arrow-left"></i> Voltar
+            <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
         </a>
     </div>
 </header>
@@ -90,24 +79,124 @@ if (!$acesso) {
 <main class="max-w-7xl mx-auto px-4 py-6">
 
 <?php if (!$acesso): ?>
+    <!-- ============================ -->
+    <!-- BLOCO 1: SEM ACESSO           -->
+    <!-- ============================ -->
     <div class="bg-white p-8 rounded-3xl border border-[#E6D5B8]/40 shadow-xl text-center max-w-lg mx-auto space-y-3">
         <i class="fa-solid fa-lock text-3xl text-[#8C6D36]"></i>
         <p class="text-stone-700"><?php echo h($erro); ?></p>
         <a href="<?php echo $voltar; ?>" class="inline-block bg-[#3E352E] text-white px-5 py-2.5 rounded-xl text-sm">Voltar ao início</a>
     </div>
+
 <?php elseif ($encerrada): ?>
+    <!-- ============================ -->
+    <!-- BLOCO 2: CONSULTA ENCERRADA   -->
+    <!-- ============================ -->
     <div class="bg-white p-8 rounded-3xl border border-[#E6D5B8]/40 shadow-xl text-center max-w-lg mx-auto space-y-3">
         <i class="fa-regular fa-circle-check text-3xl text-[#8C6D36]"></i>
-        <p class="text-stone-700">Esta consulta está com status <strong><?php echo h($c['status']); ?></strong> e a sala foi encerrada.</p>
+        <p class="text-stone-700">
+            Esta consulta está com status
+            <strong><?php echo h(StatusConsulta::label($c['status'])); ?></strong>
+            e a sala foi encerrada.
+        </p>
         <a href="<?php echo $voltar; ?>" class="inline-block bg-[#3E352E] text-white px-5 py-2.5 rounded-xl text-sm">Voltar ao início</a>
     </div>
-<?php else: ?>
 
+<?php elseif ($termoPendente): ?>
+    <!-- ============================ -->
+    <!-- BLOCO 3: TERMO PENDENTE       -->
+    <!-- ============================ -->
+    <div class="bg-white p-8 rounded-3xl border border-[#E6D5B8]/40 shadow-xl max-w-2xl mx-auto space-y-5">
+        <div class="text-center">
+            <div class="w-16 h-16 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] text-2xl mx-auto mb-3">
+                <i class="fa-solid fa-file-contract"></i>
+            </div>
+            <h1 class="text-2xl font-serif text-[#3E352E]">Termo de Consentimento</h1>
+            <p class="text-sm text-stone-500 mt-1">
+                Antes de acessar a sala de teleconsulta, leia e aceite o termo abaixo.
+                <br><span class="text-xs">Você só precisa fazer isso uma vez — nas próximas consultas não pediremos novamente.</span>
+            </p>
+        </div>
+
+        <div class="bg-[#FAF9F6] border border-stone-200 rounded-xl p-4 max-h-72 overflow-y-auto text-xs text-stone-600 leading-relaxed">
+            <?php echo termoTextoTeleconsulta(true); ?>
+        </div>
+
+        <label class="flex items-start gap-2 text-sm text-stone-700 cursor-pointer select-none">
+            <input type="checkbox" id="chk-termo-consulta" class="mt-1 w-4 h-4 accent-[#8C6D36] cursor-pointer">
+            <span>
+                Li e aceito o
+                <a href="termo-consentimento.php" target="_blank" class="text-[#8C6D36] underline font-medium">Termo de Consentimento</a>
+                na íntegra.
+            </span>
+        </label>
+
+        <!-- Testar equipamentos -->
+        <button type="button" onclick="abrirTesteAV()"
+                class="w-full bg-white border border-[#E6D5B8] text-[#8C6D36] py-3 rounded-xl text-sm font-medium hover:bg-[#F9F4EC] transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-video"></i> Testar câmera e microfone
+        </button>
+
+        <div class="flex justify-between gap-3 pt-2">
+            <a href="index.php" class="px-5 py-2.5 rounded-xl text-sm font-medium text-stone-700 border border-stone-300 hover:bg-stone-50">
+                Cancelar
+            </a>
+            <button id="btn-aceitar-termo" disabled
+                    class="px-6 py-2.5 rounded-xl text-sm font-medium bg-[#3E352E] text-white transition shadow-sm opacity-50 cursor-not-allowed">
+                <i class="fa-solid fa-check mr-1"></i> Aceitar e entrar na sala
+            </button>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        const chk = document.getElementById('chk-termo-consulta');
+        const btn = document.getElementById('btn-aceitar-termo');
+        if (!chk || !btn) return;
+
+        chk.addEventListener('change', function () {
+            btn.disabled = !this.checked;
+            btn.classList.toggle('opacity-50', !this.checked);
+            btn.classList.toggle('cursor-not-allowed', !this.checked);
+        });
+
+        btn.addEventListener('click', async function () {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i> Registrando...';
+
+            try {
+                const r = await fetch('api/aceitar_termo.php', {
+                    method: 'POST',
+                    body: new URLSearchParams({
+                        consulta_id: '<?php echo (int)$c['id']; ?>',
+                        tipo: 'teleconsulta_agendada'
+                    }),
+                    credentials: 'same-origin'
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    window.location.reload();
+                } else {
+                    alert('Erro: ' + (j.erro || 'desconhecido'));
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-check mr-1"></i> Aceitar e entrar na sala';
+                }
+            } catch (e) {
+                alert('Erro de conexão. Tente novamente.');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-check mr-1"></i> Aceitar e entrar na sala';
+            }
+        });
+    })();
+    </script>
+
+<?php else: ?>
+    <!-- ============================ -->
+    <!-- BLOCO 4: SALA NORMAL          -->
+    <!-- ============================ -->
     <div class="grid grid-cols-1 <?php echo $papel === 'medico' ? 'lg:grid-cols-5' : 'lg:grid-cols-3'; ?> gap-6 items-start">
 
-        <!-- ============================ -->
-        <!-- COLUNA ESQUERDA: VÍDEO        -->
-        <!-- ============================ -->
+        <!-- COLUNA ESQUERDA: VÍDEO -->
         <section class="<?php echo $papel === 'medico' ? 'lg:col-span-2' : 'lg:col-span-2'; ?> space-y-4">
             <div class="bg-stone-900 rounded-3xl overflow-hidden relative aspect-video shadow-xl border border-[#C5A059]/30">
                 <video id="video-remoto" autoplay playsinline class="w-full h-full object-cover"></video>
@@ -126,6 +215,9 @@ if (!$acesso) {
                 <button id="btn-cam" onclick="alternarCam()" class="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 hover:bg-stone-50 transition" title="Câmera">
                     <i class="fa-solid fa-video"></i>
                 </button>
+                <button onclick="abrirTesteAV()" class="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 hover:bg-stone-50 transition" title="Testar equipamentos">
+                    <i class="fa-solid fa-sliders"></i>
+                </button>
                 <button onclick="sair(false)" class="px-5 h-12 rounded-full bg-white border border-stone-300 text-stone-700 text-sm font-medium hover:bg-stone-50 transition">
                     <i class="fa-solid fa-door-open mr-1"></i> Sair da sala
                 </button>
@@ -141,9 +233,7 @@ if (!$acesso) {
             </p>
         </section>
 
-        <!-- ============================ -->
-        <!-- COLUNA DIREITA: PAINEL        -->
-        <!-- ============================ -->
+        <!-- COLUNA DIREITA: PAINEL -->
         <aside class="<?php echo $papel === 'medico' ? 'lg:col-span-3' : 'lg:col-span-1'; ?> space-y-4 lg:sticky lg:top-24 lg:self-start">
 
         <?php if ($papel === 'medico'): ?>
@@ -161,6 +251,9 @@ if (!$acesso) {
                                     <i class="fa-solid fa-bolt mr-1"></i> Pronto atendimento
                                 </span>
                             <?php endif; ?>
+                            <span class="text-xs font-semibold border <?php echo StatusConsulta::badgeClasses($c['status']); ?> px-2.5 py-1 rounded-full">
+                                <?php echo h(StatusConsulta::label($c['status'])); ?>
+                            </span>
                         </div>
                         <h2 class="text-xl font-serif text-[#3E352E] truncate"><?php echo h($c['paciente_nome']); ?></h2>
                         <p class="text-xs text-stone-500 mt-1">
@@ -179,9 +272,8 @@ if (!$acesso) {
                 </div>
             </div>
 
-            <!-- Card: prontuário e documentos (GRANDE) -->
+            <!-- Card: prontuário e documentos -->
             <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
-                <!-- Abas -->
                 <div class="flex gap-2 mb-4">
                     <button type="button" id="aba-pront" onclick="abaPainel('pront')"
                             class="flex-1 px-3 py-2.5 rounded-xl text-sm font-medium bg-[#3E352E] text-white transition">
@@ -189,11 +281,10 @@ if (!$acesso) {
                     </button>
                     <button type="button" id="aba-docs" onclick="abaPainel('docs')"
                             class="flex-1 px-3 py-2.5 rounded-xl text-sm font-medium bg-[#F9F4EC] text-[#5A4A3A] border border-[#E6D5B8] hover:bg-[#F4E8D1] transition">
-                        <i class="fa-solid fa-file-medical mr-1"></i> Receita / Atestado
+                        <i class="fa-solid fa-file-medical mr-1"></i> Documentações
                     </button>
                 </div>
 
-                <!-- Painel: Prontuário -->
                 <div id="painel-pront">
                     <iframe src="medico/prontuario.php?id=<?php echo (int)$c['usuario_id']; ?>&consulta=<?php echo (int)$c['id']; ?>&embed=1#nova-evolucao"
                             class="w-full rounded-xl border border-stone-200 bg-white"
@@ -206,7 +297,6 @@ if (!$acesso) {
                     </a>
                 </div>
 
-                <!-- Painel: Documentos -->
                 <div id="painel-docs" class="hidden">
                     <div class="rounded-xl border border-stone-200 bg-white p-4 overflow-y-auto" style="height: 72vh;">
                         <?php painelDocumentos((int)$c['usuario_id'], (int)$c['id'], ''); ?>
@@ -265,6 +355,8 @@ const EH_PA    = <?php echo json_encode($ehPA ?? false); ?>;
 const API      = 'api/sinal.php';
 const ICE      = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
 
+const STATUS_ENCERRADOS = ['Paciente atendido', 'Cancelar', 'Remarcar'];
+
 let pc = null, localStream = null, ultimoId = 0, ativo = true;
 let remotoPronto = false, filaCandidates = [];
 
@@ -277,11 +369,24 @@ function status(txt, mostrar = true) {
 }
 
 async function chamar(acao, dados) {
-    const opts = dados ? { method: 'POST', body: new URLSearchParams(dados), credentials: 'same-origin' } : { credentials: 'same-origin' };
-    const url = API + '?acao=' + acao + '&consulta=' + CONSULTA + (dados ? '' : '&desde=' + ultimoId);
+    const opts = dados
+        ? { method: 'POST', body: new URLSearchParams(dados), credentials: 'same-origin' }
+        : { credentials: 'same-origin' };
+
+    const url = API + '?acao=' + acao + '&consulta=' + CONSULTA + (dados ? '' : '&desde=' + ultimoId + '&_=' + Date.now());
+
     const r = await fetch(url, opts);
-    return r.json();
+    const texto = await r.text();
+
+    try {
+        return JSON.parse(texto);
+    } catch (e) {
+        console.error('[chamar] Resposta NÃO é JSON. URL:', url);
+        console.error('[chamar] Resposta bruta:', texto.substring(0, 500));
+        return { erro: 'resposta inválida', raw: texto.substring(0, 200) };
+    }
 }
+
 const enviar = (tipo, payload) => chamar('enviar', { tipo, payload: payload || '' });
 
 function criarPeer() {
@@ -350,43 +455,142 @@ async function iniciar() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     } catch (e) {
-        try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); status('Câmera indisponível: você entrou só com áudio.'); }
-        catch (e2) { status('Não foi possível acessar câmera/microfone. Libere a permissão no navegador (é necessário HTTPS ou localhost).'); return; }
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            status('Câmera indisponível: você entrou só com áudio.');
+        } catch (e2) {
+            status('Não foi possível acessar câmera/microfone. Libere a permissão no navegador (é necessário HTTPS ou localhost).');
+            return;
+        }
     }
     el('video-local').srcObject = localStream;
     status(PAPEL === 'medico'
         ? 'Aguardando o paciente entrar na sala...'
         : (EH_PA ? 'Você está na fila do pronto atendimento. Assim que um médico entrar, a chamada começa automaticamente.' : 'Aguardando o médico entrar na sala...'));
+
     criarPeer();
-    await chamar('entrar', {});
+
+    try {
+        const r = await chamar('entrar', {});
+        console.log('[iniciar] entrar retornou:', r);
+    } catch (e) {
+        console.error('[iniciar] erro no entrar:', e);
+    }
+
     loopSinal();
     if (PAPEL === 'paciente') acompanhar();
 }
 
 let totalDocs = 0;
-async function acompanhar() {
-    while (ativo) {
+let ultimoMedicoId = null;
+let pollingRapidoAtivo = true;
+
+async function pollStatus() {
+    while (ativo && pollingRapidoAtivo) {
         try {
-            const r = await fetch('api/documentos.php?acao=listar&consulta=' + CONSULTA, { credentials: 'same-origin' });
+            const r = await fetch('api/status_teleconsulta.php?consulta=' + CONSULTA + '&_=' + Date.now(), {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+            });
+
             if (r.ok) {
                 const j = await r.json();
+                console.log('[pollStatus]', j);
+
                 const elNome = el('nome-medico');
-                if (j.medico_nome && elNome) elNome.textContent = j.medico_nome;
-                renderDocs(j.documentos || []);
-                if (j.status === 'Realizada' || j.status === 'Cancelada') {
+                if (elNome) {
+                    if (j.medico_nome && j.medico_nome.trim() !== '') {
+                        if (elNome.textContent.trim() !== j.medico_nome.trim()) {
+                            console.log('[pollStatus] Médico mudou:', j.medico_nome);
+                            elNome.textContent = j.medico_nome;
+                            elNome.classList.remove('opacity-70');
+
+                            if (ultimoMedicoId === null && j.medico_id !== null) {
+                                mostrarToast('O médico entrou na sala!');
+                                bip();
+                            }
+                        }
+                    } else {
+                        const textoAguardando = 'Aguardando um médico da especialidade';
+                        if (elNome.textContent.trim() !== textoAguardando) {
+                            elNome.textContent = textoAguardando;
+                            elNome.classList.add('opacity-70');
+                        }
+                    }
+                }
+                ultimoMedicoId = j.medico_id;
+
+                if (STATUS_ENCERRADOS.includes(j.status)) {
                     ativo = false;
+                    pollingRapidoAtivo = false;
                     el('video-remoto').srcObject = null;
-                    status(j.status === 'Realizada' ? 'Consulta encerrada pelo médico.' : 'Esta solicitação foi cancelada.');
+                    status(j.status === 'Paciente atendido'
+                        ? 'Consulta encerrada pelo médico.'
+                        : 'Esta solicitação foi cancelada.');
                     const av = el('aviso-encerrada');
-                    if (j.status === 'Realizada' && av) av.classList.remove('hidden');
+                    if (j.status === 'Paciente atendido' && av) av.classList.remove('hidden');
                     if (localStream) localStream.getTracks().forEach(t => t.stop());
                     if (pc) pc.close();
                     return;
                 }
             }
+        } catch (e) {
+            console.warn('[pollStatus] erro:', e);
+        }
+
+        await dormir(1000);
+    }
+}
+
+async function pollDocumentos() {
+    while (ativo) {
+        try {
+            const r = await fetch('api/documentos.php?acao=listar&consulta=' + CONSULTA + '&_=' + Date.now(), {
+                credentials: 'same-origin',
+                cache: 'no-store'
+            });
+            if (r.ok) {
+                const j = await r.json();
+                renderDocs(j.documentos || []);
+            }
         } catch (e) {}
         await dormir(4000);
     }
+}
+
+function acompanhar() {
+    pollStatus();
+    pollDocumentos();
+}
+
+function mostrarToast(texto) {
+    const antigo = document.getElementById('toast-medico-entrou');
+    if (antigo) antigo.remove();
+
+    const t = document.createElement('div');
+    t.id = 'toast-medico-entrou';
+    t.className = 'fixed top-24 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white px-6 py-3 rounded-2xl shadow-2xl text-sm font-medium flex items-center gap-2 animate-pulse';
+    t.innerHTML = '<i class="fa-solid fa-user-doctor"></i> ' + texto;
+    document.body.appendChild(t);
+
+    setTimeout(() => {
+        t.style.transition = 'opacity 0.5s';
+        t.style.opacity = '0';
+        setTimeout(() => t.remove(), 500);
+    }, 4000);
+}
+
+function bip() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 880;
+        g.gain.value = 0.15;
+        o.start();
+        setTimeout(() => { o.stop(); ctx.close(); }, 250);
+    } catch (e) {}
 }
 
 let docsCarregados = false;
@@ -405,7 +609,8 @@ function renderDocs(docs) {
         const li = document.createElement('li');
         li.className = 'flex items-center justify-between gap-2 border border-stone-200 rounded-xl px-3 py-2 bg-[#FAF9F6]';
         const t = document.createElement('div');
-        const b = document.createElement('strong'); b.textContent = d.tipo === 'receita' ? 'Receita' : 'Atestado';
+        const b = document.createElement('strong');
+        b.textContent = d.tipo === 'receita' ? 'Receita' : (d.tipo === 'atestado' ? 'Atestado' : 'Declaração');
         const s2 = document.createElement('div'); s2.className = 'text-xs text-stone-500'; s2.textContent = d.data;
         t.appendChild(b); t.appendChild(s2);
         const a = document.createElement('a');
@@ -439,12 +644,45 @@ function alternarCam() {
 }
 
 async function sair(finalizar) {
-    if (finalizar && !confirm('Finalizar a consulta? Ela será marcada como Realizada e a sala será encerrada.\n\nAntes de confirmar, veja se já registrou o prontuário e enviou a receita/atestado, se for o caso.')) return;
-    ativo = false;
-    try {
-        if (finalizar) await chamar('finalizar', {});
-        else await enviar('saiu');
-    } catch (e) {}
+    if (finalizar) {
+        if (!confirm('Finalizar a consulta? Ela será marcada como "Paciente atendido" e a sala será encerrada.\n\nAntes de confirmar, veja se já registrou o prontuário e enviou a receita/atestado, se for o caso.')) return;
+
+        ativo = false;
+        try {
+            const resp = await fetch(API + '?acao=finalizar&consulta=' + CONSULTA, {
+                method: 'POST',
+                body: new URLSearchParams({}),
+                credentials: 'same-origin'
+            });
+            const json = await resp.json();
+            console.log('[sair] finalizar retornou:', json);
+
+            if (!json.ok) {
+                alert('Erro ao finalizar: ' + (json.erro || 'desconhecido'));
+                ativo = true;
+                return;
+            }
+        } catch (e) {
+            console.error('[sair] erro no finalizar:', e);
+            alert('Erro de conexão ao finalizar. Tente novamente.');
+            ativo = true;
+            return;
+        }
+    } else {
+        if (PAPEL === 'medico') {
+            try {
+                await fetch(API + '?acao=sair_sala&consulta=' + CONSULTA, {
+                    method: 'POST',
+                    body: new URLSearchParams({}),
+                    credentials: 'same-origin'
+                });
+            } catch (e) {}
+        } else {
+            try { await enviar('saiu'); } catch (e) {}
+        }
+        ativo = false;
+    }
+
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     if (pc) pc.close();
     window.location.href = VOLTAR;
@@ -455,6 +693,40 @@ window.addEventListener('pagehide', () => {
     const fd = new FormData(); fd.append('tipo', 'saiu'); fd.append('payload', '');
     navigator.sendBeacon(API + '?acao=enviar&consulta=' + CONSULTA, fd);
 });
+
+let ultimaVezEntrouMedico = 0;
+let tentativasWatchdog = 0;
+
+const _processarOriginal = processar;
+window.processar = async function (m) {
+    if (m.tipo === 'entrou' && PAPEL === 'paciente') {
+        ultimaVezEntrouMedico = Date.now();
+        tentativasWatchdog = 0;
+    }
+    return _processarOriginal(m);
+};
+
+setInterval(async () => {
+    if (PAPEL !== 'paciente') return;
+    if (!ultimaVezEntrouMedico) return;
+
+    if (pc && pc.connectionState === 'connected') {
+        ultimaVezEntrouMedico = 0;
+        return;
+    }
+
+    const esperando = Date.now() - ultimaVezEntrouMedido;
+    if (esperando > 6000 && tentativasWatchdog < 3) {
+        console.log('[watchdog] Paciente preso em Conectando há ' + Math.round(esperando/1000) + 's. Reenviando entrar...');
+        tentativasWatchdog++;
+        ultimaVezEntrouMedico = Date.now();
+        try {
+            await chamar('entrar', {});
+        } catch (e) {
+            console.warn('[watchdog] erro ao reenviar entrar:', e);
+        }
+    }
+}, 3000);
 
 if (document.getElementById('video-local')) {
     iniciar();

@@ -4,6 +4,7 @@ require_once __DIR__ . '/../../bootstrap.php';
 use App\Database;
 use App\Auth;
 use App\TiposAtendimento;
+use App\StatusConsulta;
 
 if (!Auth::isAdmin()) {
     header("Location: ../dashboard.php");
@@ -43,7 +44,7 @@ $stmt = $pdo->prepare("SELECT * FROM activity_logs $whereSql ORDER BY created_at
 $stmt->execute($params);
 $logs = $stmt->fetchAll();
 
-// Tags rápidas
+// Tags rápidas (produtos + estados)
 $allTags = [
     TiposAtendimento::LAC_TELEATENDIMENTO,
     TiposAtendimento::LAC_ATENDE,
@@ -52,6 +53,12 @@ $allTags = [
     TiposAtendimento::CANCELADO,
 ];
 
+// Tags de status (item 24)
+$tagsStatus = StatusConsulta::tagsFiltro();
+
+// ============================================================
+// Helpers
+// ============================================================
 function badgeAction(string $action): string {
     $map = [
         'created'                 => 'bg-emerald-100 text-emerald-800 border-emerald-200',
@@ -64,6 +71,21 @@ function badgeAction(string $action): string {
         'lac_atende_iniciado'     => 'bg-amber-100 text-amber-800 border-amber-200',
         'atendimento_iniciado'    => 'bg-emerald-100 text-emerald-800 border-emerald-200',
         'atendimento_finalizado'  => 'bg-stone-100 text-stone-700 border-stone-200',
+
+        // 👇 NOVOS: ações de cookies (LGPD)
+        'cookies_aceitou_todos'      => 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        'cookies_rejeitou_opcionais' => 'bg-amber-100 text-amber-800 border-amber-200',
+        'cookies_personalizou'       => 'bg-blue-100 text-blue-800 border-blue-200',
+        'cookies_revogou'            => 'bg-red-100 text-red-800 border-red-200',
+
+        // 👇 NOVOS: ações LGPD em geral
+        'lgpd_solicitacao_criada'         => 'bg-blue-100 text-blue-800 border-blue-200',
+        'lgpd_solicitacao_respondida'     => 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        'lgpd_exportacao'                 => 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        'lgpd_incidente_registrado'       => 'bg-red-100 text-red-800 border-red-200',
+        'lgpd_incidente_atualizado'       => 'bg-amber-100 text-amber-800 border-amber-200',
+        'lgpd_incidente_falso_alarme'     => 'bg-purple-100 text-purple-700 border-purple-200',
+        'lgpd_incidente_excluido'         => 'bg-red-100 text-red-800 border-red-200',
     ];
     $cls = $map[$action] ?? 'bg-[#F9F4EC] text-[#8C6D36] border-[#E6D5B8]';
     return "<span class=\"inline-block px-2.5 py-1 rounded-full text-xs font-semibold border $cls\">" . htmlspecialchars($action) . "</span>";
@@ -78,9 +100,40 @@ function badgeTag(string $tag): string {
         TiposAtendimento::EM_ANDAMENTO        => 'bg-emerald-100 text-emerald-800 border-emerald-300',
         TiposAtendimento::FINALIZADO          => 'bg-stone-100 text-stone-700 border-stone-300',
         TiposAtendimento::CANCELADO           => 'bg-red-100 text-red-800 border-red-300',
+        'agendada'          => 'bg-amber-100 text-amber-800 border-amber-300',
+        'confirmada'        => 'bg-blue-100 text-blue-800 border-blue-300',
+        'reagendada'        => 'bg-purple-100 text-purple-800 border-purple-300',
+        'presente'          => 'bg-teal-100 text-teal-800 border-teal-300',
+        'em_atendimento'    => 'bg-emerald-100 text-emerald-800 border-emerald-300',
+        'paciente_atendido' => 'bg-stone-100 text-stone-700 border-stone-300',
+        'remarcar'          => 'bg-orange-100 text-orange-800 border-orange-300',
+        'cancelar'          => 'bg-red-100 text-red-800 border-red-300',
+
+        // 👇 NOVOS: tags LGPD / cookies
+        'lgpd'         => 'bg-indigo-100 text-indigo-800 border-indigo-300',
+        'cookies'      => 'bg-cyan-100 text-cyan-800 border-cyan-300',
+        'incidente'    => 'bg-red-100 text-red-800 border-red-300',
+        'falso_alarme' => 'bg-purple-100 text-purple-700 border-purple-300',
+        'exclusao'     => 'bg-red-100 text-red-800 border-red-300',
+        'solicitacao'  => 'bg-blue-100 text-blue-800 border-blue-300',
+        'resposta'     => 'bg-emerald-100 text-emerald-800 border-emerald-300',
+        'consentimento'=> 'bg-teal-100 text-teal-800 border-teal-300',
+        'termo'        => 'bg-teal-100 text-teal-800 border-teal-300',
+        'ropa'         => 'bg-indigo-100 text-indigo-800 border-indigo-300',
     ];
     $cls = $map[$tag] ?? 'bg-[#F9F4EC] text-[#5A4A3A] border-[#E6D5B8]';
-    return "<span class=\"inline-block px-2.5 py-1 rounded-full text-xs font-medium border $cls\">" . htmlspecialchars(TiposAtendimento::label($tag)) . "</span>";
+
+    $labels = StatusConsulta::tagsFiltro();
+    if (isset($labels[$tag])) {
+        $label = $labels[$tag];
+    } else {
+        $label = TiposAtendimento::label($tag);
+        if ($label === $tag) {
+            $label = ucfirst(str_replace('_', ' ', $tag));
+        }
+    }
+
+    return "<span class=\"inline-block px-2.5 py-1 rounded-full text-xs font-medium border $cls\">" . htmlspecialchars($label) . "</span>";
 }
 ?>
 <!DOCTYPE html>
@@ -106,7 +159,11 @@ function badgeTag(string $tag): string {
             </div>
             <div class="flex items-center space-x-4">
                 <a href="../dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
-                    <i class="fa-solid fa-arrow-left"></i> <span class="hidden sm:inline">Voltar ao Painel</span>
+                    <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
+                </a>
+                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo htmlspecialchars($nomeAdmin); ?></span>
+                <a href="../../logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
                 </a>
             </div>
         </div>
@@ -114,7 +171,7 @@ function badgeTag(string $tag): string {
 
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
 
-        <!-- Cabeçalho da página -->
+        <!-- Cabeçalho -->
         <section class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
                 <h1 class="text-3xl font-serif text-[#3E352E] flex items-center gap-3">
@@ -128,10 +185,10 @@ function badgeTag(string $tag): string {
             </a>
         </section>
 
-        <!-- Filtros rápidos por tag -->
+        <!-- Filtros por produtos -->
         <section class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
             <div class="text-xs font-bold text-stone-600 uppercase tracking-wider mb-3">
-                <i class="fa-solid fa-filter text-[#8C6D36]"></i> Filtros rápidos
+                <i class="fa-solid fa-filter text-[#8C6D36]"></i> Filtrar por produto / estado
             </div>
             <div class="flex flex-wrap gap-2">
                 <a href="?<?php echo http_build_query(array_merge($_GET, ['tag' => '', 'page' => 1])); ?>"
@@ -148,6 +205,49 @@ function badgeTag(string $tag): string {
                 <?php endforeach; ?>
             </div>
         </section>
+
+        <!-- Filtros por STATUS -->
+        <section class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
+            <div class="text-xs font-bold text-stone-600 uppercase tracking-wider mb-3">
+                <i class="fa-solid fa-tag text-[#8C6D36]"></i> Filtrar por status da consulta
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <?php foreach ($tagsStatus as $tagStatus => $labelStatus): ?>
+                    <a href="?<?php echo http_build_query(array_merge($_GET, ['tag' => $tagStatus, 'page' => 1])); ?>"
+                       class="px-4 py-2 rounded-xl text-xs font-medium border transition
+                              <?php echo $tag === $tagStatus ? 'bg-[#3E352E] text-white border-[#3E352E]' : 'bg-white text-stone-700 border-stone-300 hover:border-[#8C6D36] hover:text-[#8C6D36]'; ?>">
+                        <?php echo $labelStatus; ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </section>
+
+<!-- 👇 NOVO: Filtros por LGPD / cookies -->
+<section class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
+    <div class="text-xs font-bold text-stone-600 uppercase tracking-wider mb-3">
+        <i class="fa-solid fa-shield-halved text-[#8C6D36]"></i> Filtros LGPD
+    </div>
+    <div class="flex flex-wrap gap-2">
+        <?php
+        $tagsLgpd = [
+            'lgpd'        => 'Tudo de LGPD',
+            'cookies'     => 'Cookies',
+            'incidente'   => 'Incidentes',
+            'solicitacao' => 'Solicitações',
+            'consentimento'=> 'Consentimentos',
+            'termo'       => 'Termos',
+            'exclusao'    => 'Exclusões',
+        ];
+        foreach ($tagsLgpd as $tagKey => $tagLabel):
+        ?>
+            <a href="?<?php echo http_build_query(array_merge($_GET, ['tag' => $tagKey, 'page' => 1])); ?>"
+               class="px-4 py-2 rounded-xl text-xs font-medium border transition
+                      <?php echo $tag === $tagKey ? 'bg-[#3E352E] text-white border-[#3E352E]' : 'bg-white text-stone-700 border-stone-300 hover:border-[#8C6D36] hover:text-[#8C6D36]'; ?>">
+                <?php echo $tagLabel; ?>
+            </a>
+        <?php endforeach; ?>
+    </div>
+</section>
 
         <!-- Filtros detalhados -->
         <section class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">

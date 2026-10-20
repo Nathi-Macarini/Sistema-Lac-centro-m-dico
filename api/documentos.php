@@ -1,19 +1,31 @@
 <?php
-require_once __DIR__ . '/../../bootstrap.php';
-// API de receitas e atestados.
-//   POST acao=emitir            (só médico)  -> grava o documento
-//   GET  acao=listar&consulta=  (médico ou paciente da consulta) -> documentos + status
-//   GET  acao=listar&paciente=  (só médico)  -> todos os documentos do paciente
-require __DIR__ . '/../conexao.php';
+ob_start();
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+
+require_once __DIR__ . '/../bootstrap.php';
+require_once __DIR__ . '/../conexao.php';
+
 header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
-function resp($dados, $codigo = 200) { http_response_code($codigo); echo json_encode($dados); exit; }
+function resp($dados, $codigo = 200) {
+    if (ob_get_level() > 0) ob_end_clean();
+    http_response_code($codigo);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($dados);
+    exit;
+}
 
-if (!isset($_SESSION['usuario_id']) && !souMedico()) resp(['erro' => 'não autenticado'], 401);
+if (!isset($_SESSION['usuario_id']) && !souMedico()) {
+    resp(['erro' => 'não autenticado'], 401);
+}
 
 $acao = $_REQUEST['acao'] ?? '';
 
-// ---------------------------------------------------------------- emitir
+// ================================================================
+// EMITIR DOCUMENTO
+// ================================================================
 if ($acao === 'emitir' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!souMedico()) resp(['erro' => 'apenas médicos emitem documentos'], 403);
     $m = medicoAtual($conn);
@@ -25,7 +37,9 @@ if ($acao === 'emitir' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $tipo = $_POST['tipo'] ?? '';
     $conteudo = trim($_POST['conteudo'] ?? '');
 
-    if (!in_array($tipo, ['receita', 'atestado'], true)) resp(['erro' => 'tipo inválido'], 400);
+    if (!in_array($tipo, ['receita', 'atestado', 'declaracao'], true)) {
+        resp(['erro' => 'tipo inválido'], 400);
+    }
     if (mb_strlen($conteudo) > 5000) resp(['erro' => 'texto grande demais'], 400);
 
     $st = $conn->prepare("SELECT id FROM usuarios WHERE id = ? AND tipo = 'comum'");
@@ -40,30 +54,81 @@ if ($acao === 'emitir' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$st->get_result()->fetch_assoc()) resp(['erro' => 'consulta não pertence a você e a este paciente'], 403);
     }
 
-    $dias = null; $cid10 = null;
+    $dias          = null;
+    $cid10         = null;
+    $validadeDias  = null;
+    $cbo           = null;
+
+    // ---------------- RECEITA ----------------
     if ($tipo === 'receita') {
         if ($conteudo === '') resp(['erro' => 'Escreva os medicamentos e a posologia da receita.'], 400);
-    } else {
+
+        $validadeDias = (int)($_POST['validade_dias'] ?? 30);
+        if (!in_array($validadeDias, [30, 60, 90, 180], true)) $validadeDias = 30;
+
+        $c = preg_replace('/[^0-9]/', '', $_POST['cbo'] ?? '');
+        $cbo = $c !== '' ? $c : null;
+    }
+
+    // ---------------- ATESTADO ----------------
+    elseif ($tipo === 'atestado') {
         $dias = (int)($_POST['dias_afastamento'] ?? 0);
         if ($dias < 0 || $dias > 365) resp(['erro' => 'Dias de afastamento deve ficar entre 0 e 365.'], 400);
         if (!empty($_POST['incluir_cid'])) {
             $c = strtoupper(trim($_POST['cid10'] ?? ''));
             if ($c !== '') {
-                if (!preg_match('/^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$/', $c)) resp(['erro' => 'CID-10 inválido (exemplo: J00 ou M54.5).'], 400);
+                if (!preg_match('/^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$/', $c)) {
+                    resp(['erro' => 'CID-10 inválido (exemplo: J00 ou M54.5).'], 400);
+                }
                 $cid10 = $c;
             }
         }
         if ($conteudo === '') $conteudo = null;
+        // Atestado não usa validade nem CBO
+    }
+
+    // ---------------- DECLARAÇÃO ----------------
+    else {
+        if ($conteudo === '') resp(['erro' => 'Escreva o texto da declaração.'], 400);
+
+        $validadeDias = (int)($_POST['validade_dias'] ?? 30);
+        if (!in_array($validadeDias, [30, 60, 90, 180], true)) $validadeDias = 30;
+
+        $c = preg_replace('/[^0-9]/', '', $_POST['cbo'] ?? '');
+        $cbo = $c !== '' ? $c : null;
+
+        if (!empty($_POST['incluir_cid'])) {
+            $c = strtoupper(trim($_POST['cid10'] ?? ''));
+            if ($c !== '') {
+                if (!preg_match('/^[A-Z][0-9]{2}(\.[0-9A-Z]{1,4})?$/', $c)) {
+                    resp(['erro' => 'CID-10 inválido (exemplo: I10 ou M54.5).'], 400);
+                }
+                $cid10 = $c;
+            }
+        }
+        $dias = null;
     }
 
     $codigo = strtoupper(bin2hex(random_bytes(6)));
-    $st = $conn->prepare("INSERT INTO documentos (paciente_id, medico_id, consulta_id, tipo, conteudo, dias_afastamento, cid10, codigo) VALUES (?,?,?,?,?,?,?,?)");
-    $st->bind_param('iiississ', $pid, $mid, $cid, $tipo, $conteudo, $dias, $cid10, $codigo);
+    $st = $conn->prepare("
+        INSERT INTO documentos
+            (paciente_id, medico_id, consulta_id, tipo, conteudo,
+             dias_afastamento, validade_dias, cid10, cbo, codigo)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    ");
+    $st->bind_param(
+        'iiissisiss',
+        $pid, $mid, $cid, $tipo, $conteudo,
+        $dias, $validadeDias, $cid10, $cbo, $codigo
+    );
     if (!$st->execute()) resp(['erro' => 'erro ao salvar: ' . $conn->error], 500);
+
     resp(['ok' => true, 'id' => (int)$conn->insert_id, 'tipo' => $tipo]);
 }
 
-// ---------------------------------------------------------------- listar
+// ================================================================
+// LISTAR
+// ================================================================
 if ($acao === 'listar') {
     $extra = [];
     $docs  = [];
@@ -75,7 +140,7 @@ if ($acao === 'listar') {
         $c = $acesso['consulta'];
         $extra = ['status' => $c['status'], 'medico_nome' => $c['medico_nome'] ?? null];
         $st = $conn->prepare(
-            "SELECT d.id, d.tipo, d.criado_em, d.dias_afastamento, d.conteudo, m.nome AS medico_nome
+            "SELECT d.id, d.tipo, d.criado_em, d.dias_afastamento, d.validade_dias, d.conteudo, m.nome AS medico_nome
              FROM documentos d JOIN medicos m ON m.id = d.medico_id
              WHERE d.consulta_id = ? ORDER BY d.id DESC");
         $st->bind_param('i', $cid);
@@ -83,7 +148,7 @@ if ($acao === 'listar') {
         if (!souMedico()) resp(['erro' => 'apenas médicos'], 403);
         $pid = (int)$_GET['paciente'];
         $st = $conn->prepare(
-            "SELECT d.id, d.tipo, d.criado_em, d.dias_afastamento, d.conteudo, m.nome AS medico_nome
+            "SELECT d.id, d.tipo, d.criado_em, d.dias_afastamento, d.validade_dias, d.conteudo, m.nome AS medico_nome
              FROM documentos d JOIN medicos m ON m.id = d.medico_id
              WHERE d.paciente_id = ? ORDER BY d.id DESC LIMIT 50");
         $st->bind_param('i', $pid);
@@ -93,9 +158,19 @@ if ($acao === 'listar') {
 
     $st->execute();
     foreach ($st->get_result()->fetch_all(MYSQLI_ASSOC) as $d) {
-        $resumo = $d['tipo'] === 'atestado'
-            ? ($d['dias_afastamento'] ? $d['dias_afastamento'] . ' dia(s) de afastamento' : 'Atestado de comparecimento')
-            : mb_substr(preg_replace('/\s+/', ' ', (string)$d['conteudo']), 0, 70);
+        if ($d['tipo'] === 'atestado') {
+            $resumo = $d['dias_afastamento']
+                ? $d['dias_afastamento'] . ' dia(s) de afastamento'
+                : 'Atestado de comparecimento';
+        } elseif ($d['tipo'] === 'declaracao') {
+            $resumo = 'Declaração · ' . mb_substr(preg_replace('/\s+/', ' ', (string)$d['conteudo']), 0, 50);
+        } else {
+            $resumo = mb_substr(preg_replace('/\s+/', ' ', (string)$d['conteudo']), 0, 60);
+        }
+        if (!empty($d['validade_dias'])) {
+            $resumo .= ' · válida ' . (int)$d['validade_dias'] . 'd';
+        }
+
         $docs[] = [
             'id'      => (int)$d['id'],
             'tipo'    => $d['tipo'],

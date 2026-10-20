@@ -1,5 +1,8 @@
 <?php
 require_once __DIR__ . '/../bootstrap.php';
+require_once __DIR__ . '/../conexao.php';
+
+use App\StatusConsulta;
 
 if (!isset($_SESSION['usuario_id']) || $_SESSION['tipo_usuario'] !== 'admin') {
     header("Location: ../login.php");
@@ -7,17 +10,50 @@ if (!isset($_SESSION['usuario_id']) || $_SESSION['tipo_usuario'] !== 'admin') {
 }
 $nomeAdmin = $_SESSION['nome_usuario'] ?? 'Administrador';
 
-// Estatísticas rápidas (opcional, mas dá vida ao painel)
+// ============================================================
+// RETENÇÃO AUTOMÁTICA LGPD (roda 1x por dia)
+// ============================================================
+try {
+    $autoAtiva = \App\LGPD::config($conn, 'retencao_auto_ativa', '1') === '1';
+    if ($autoAtiva && \App\Retencao::deveExecutar(24)) {
+        \App\Retencao::executar($conn, 0); // 0 = automático
+    }
+} catch (\Throwable $e) {
+    error_log('[Retencao] ' . $e->getMessage());
+}
+
+// ============================================================
+// EXPORTAÇÕES AUTOMÁTICAS (roda no máximo 1x por hora)
+// ============================================================
+$exportacoesGeradas = [];
+try {
+    if (\App\ExportadorAutomatico::deveVerificar(60)) {
+        $res = \App\ExportadorAutomatico::verificarEgerar();
+        $exportacoesGeradas = $res['gerados'];
+    }
+} catch (\Throwable $e) {
+    // Silencioso — não quebra o dashboard
+    error_log('[ExportadorAutomatico] ' . $e->getMessage());
+}
+
+// ============================================================
+// ESTATÍSTICAS
+// ============================================================
 try {
     $pdo = \App\Database::conn();
+
+    $statusAtivas  = StatusConsulta::sqlIn([StatusConsulta::AGENDADA]);
+    $statusOnline  = StatusConsulta::sqlIn(StatusConsulta::ONLINE);
+
     $stats = [
-        'usuarios'  => (int) $pdo->query("SELECT COUNT(*) FROM usuarios")->fetchColumn(),
-        'medicos'   => (int) $pdo->query("SELECT COUNT(*) FROM medicos")->fetchColumn(),
-        'consultas' => (int) $pdo->query("SELECT COUNT(*) FROM consultas WHERE status IN ('Agendada','Em andamento')")->fetchColumn(),
-        'logs_hoje' => (int) $pdo->query("SELECT COUNT(*) FROM activity_logs WHERE DATE(created_at) = CURDATE()")->fetchColumn(),
+        'usuarios'   => (int) $pdo->query("SELECT COUNT(*) FROM usuarios")->fetchColumn(),
+        'medicos'    => (int) $pdo->query("SELECT COUNT(*) FROM medicos")->fetchColumn(),
+        'consultas'  => (int) $pdo->query("SELECT COUNT(*) FROM consultas WHERE status IN ($statusAtivas)")->fetchColumn(),
+        'online'     => (int) $pdo->query("SELECT COUNT(*) FROM consultas WHERE modalidade = 'Vídeo' AND status IN ($statusOnline)")->fetchColumn(),
+        'logs_hoje'  => (int) $pdo->query("SELECT COUNT(*) FROM activity_logs WHERE DATE(created_at) = CURDATE()")->fetchColumn(),
     ];
 } catch (\Throwable $e) {
-    $stats = ['usuarios' => '—', 'medicos' => '—', 'consultas' => '—', 'logs_hoje' => '—'];
+    $stats = ['usuarios' => '—', 'medicos' => '—', 'consultas' => '—', 'online' => '—', 'logs_hoje' => '—'];
 }
 ?>
 <!DOCTYPE html>
@@ -77,10 +113,52 @@ try {
                     <i class="fa-solid fa-clipboard-list text-[#8C6D36]"></i> Ver Logs Recentes
                 </a>
             </div>
+
+                    <?php if (!empty($exportacoesGeradas)): ?>
+    <div class="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-xl text-sm flex items-start gap-2">
+        <i class="fa-solid fa-circle-info mt-0.5"></i>
+        <div>
+            <strong>Exportações automáticas geradas:</strong>
+            <ul class="mt-1 space-y-0.5">
+                <?php foreach ($exportacoesGeradas as $g): ?>
+                    <li>
+                        · <?php echo htmlspecialchars(\App\ExportadorCSV::TIPOS[$g['tipo']]); ?>
+                        (<?php echo htmlspecialchars($g['periodo']); ?>)
+                        — <?php echo (int)$g['linhas']; ?> linha(s)
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+            <a href="exportacoes/index.php" class="underline font-medium mt-1 inline-block">
+                Ir para Exportações →
+            </a>
+        </div>
+    </div>
+<?php endif; ?>
         </section>
 
+        <?php if (!empty($exportacoesGeradas)): ?>
+    <div class="bg-blue-50 border border-blue-200 text-blue-800 px-4 py-3 rounded-xl text-sm flex items-start gap-2">
+        <i class="fa-solid fa-circle-info mt-0.5"></i>
+        <div>
+            <strong>Exportações automáticas geradas:</strong>
+            <ul class="mt-1 space-y-0.5">
+                <?php foreach ($exportacoesGeradas as $g): ?>
+                    <li>
+                        · <?php echo htmlspecialchars(\App\ExportadorCSV::TIPOS[$g['tipo']]); ?>
+                        (<?php echo htmlspecialchars($g['periodo']); ?>)
+                        — <?php echo (int)$g['linhas']; ?> linha(s)
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+            <a href="exportacoes/index.php" class="underline font-medium mt-1 inline-block">
+                Ir para Exportações →
+            </a>
+        </div>
+    </div>
+<?php endif; ?>
+
         <!-- Estatísticas -->
-        <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <section class="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
                 <div class="flex items-center justify-between mb-3">
                     <div class="w-10 h-10 rounded-xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36]">
@@ -105,18 +183,43 @@ try {
 
             <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
                 <div class="flex items-center justify-between mb-3">
-                    <div class="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-700">
+                    <div class="w-10 h-10 rounded-xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36]">
                         <i class="fa-solid fa-calendar-check"></i>
                     </div>
                     <span class="text-xs font-bold text-stone-400 uppercase tracking-wider">Consultas</span>
                 </div>
                 <div class="text-3xl font-serif text-[#3E352E]"><?php echo $stats['consultas']; ?></div>
-                <div class="text-xs text-stone-500 mt-1">agendadas / em andamento</div>
+                <div class="text-xs text-stone-500 mt-1">agendadas</div>
+            </div>
+
+            <!-- Card: Teleconsultas online -->
+            <div class="bg-white p-5 rounded-2xl border <?php echo $stats['online'] > 0 ? 'border-emerald-300 shadow-md shadow-emerald-100' : 'border-[#E6D5B8]/40'; ?> shadow-sm relative overflow-hidden">
+                <?php if ($stats['online'] > 0): ?>
+                    <div class="absolute top-3 right-3">
+                        <span class="relative flex h-3 w-3">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                        </span>
+                    </div>
+                <?php endif; ?>
+
+                <div class="flex items-center justify-between mb-3">
+                    <div class="w-10 h-10 rounded-xl <?php echo $stats['online'] > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-[#F9F4EC] border-[#E6D5B8] text-[#8C6D36]'; ?> border flex items-center justify-center">
+                        <i class="fa-solid fa-video"></i>
+                    </div>
+                    <span class="text-xs font-bold text-stone-400 uppercase tracking-wider">Online</span>
+                </div>
+                <div class="text-3xl font-serif <?php echo $stats['online'] > 0 ? 'text-emerald-700' : 'text-[#3E352E]'; ?>">
+                    <?php echo $stats['online']; ?>
+                </div>
+                <div class="text-xs text-stone-500 mt-1">
+                    <?php echo $stats['online'] > 0 ? 'teleconsultas agora' : 'nenhuma agora'; ?>
+                </div>
             </div>
 
             <div class="bg-white p-5 rounded-2xl border border-[#E6D5B8]/40 shadow-sm">
                 <div class="flex items-center justify-between mb-3">
-                    <div class="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+                    <div class="w-10 h-10 rounded-xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36]">
                         <i class="fa-solid fa-bolt"></i>
                     </div>
                     <span class="text-xs font-bold text-stone-400 uppercase tracking-wider">Hoje</span>
@@ -181,7 +284,7 @@ try {
                 <div class="h-px flex-1 bg-[#E6D5B8]/60"></div>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 <a href="listar_usuarios.php"
                    class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
                     <div class="flex items-start gap-4">
@@ -213,8 +316,25 @@ try {
                         </div>
                     </div>
                 </a>
+                            <!-- Adicione DEPOIS do card "Médicos" -->
+<a href="gerenciar_consultas.php"
+   class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
+    <div class="flex items-start gap-4">
+        <div class="w-12 h-12 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] group-hover:bg-[#8C6D36] group-hover:text-white transition shrink-0">
+            <i class="fa-solid fa-hand-holding-medical text-lg"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+            <h3 class="font-serif text-lg text-[#3E352E] flex items-center justify-between">
+                Gerenciar Consultas
+                <i class="fa-solid fa-arrow-right text-[#C5A059] text-sm opacity-0 group-hover:opacity-100 transition"></i>
+            </h3>
+            <p class="text-sm text-stone-500 mt-1">Alterar entre SUS e Particular em cada consulta.</p>
+        </div>
+    </div>
+</a>
             </div>
         </section>
+        
 
         <!-- Ações Rápidas — Sistema -->
         <section>
@@ -226,7 +346,7 @@ try {
                 <div class="h-px flex-1 bg-[#E6D5B8]/60"></div>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 max-w-6xl mx-auto">
                 <a href="logs/index.php"
                    class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
                     <div class="flex items-start gap-4">
@@ -242,9 +362,61 @@ try {
                         </div>
                     </div>
                 </a>
+
+                <!-- Exportações CSV (agora vem antes do Limpar, para ficar no meio) -->
+        <a href="exportacoes/index.php"
+           class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
+            <div class="flex items-start gap-4">
+                <div class="w-12 h-12 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] group-hover:bg-[#8C6D36] group-hover:text-white transition shrink-0">
+                    <i class="fa-solid fa-file-csv text-lg"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <h3 class="font-serif text-lg text-[#3E352E] flex items-center justify-between">
+                        Exportações CSV
+                        <i class="fa-solid fa-arrow-right text-[#C5A059] text-sm opacity-0 group-hover:opacity-100 transition"></i>
+                    </h3>
+                    <p class="text-sm text-stone-500 mt-1">Gere relatórios em CSV para auditoria e LGPD.</p>
+                </div>
             </div>
+        </a>
+
+        <a href="lgpd/index.php"
+   class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
+    <div class="flex items-start gap-4">
+        <div class="w-12 h-12 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] group-hover:bg-[#8C6D36] group-hover:text-white transition shrink-0">
+            <i class="fa-solid fa-shield-halved text-lg"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+            <h3 class="font-serif text-lg text-[#3E352E] flex items-center justify-between">
+                Solicitações da LGPD
+                <i class="fa-solid fa-arrow-right text-[#C5A059] text-sm opacity-0 group-hover:opacity-100 transition"></i>
+            </h3>
+            <p class="text-sm text-stone-500 mt-1">Atenda pedidos de titulares: acesso, exclusão, portabilidade.</p>
+        </div>
+    </div>
+</a>
+
+                <!-- 👇 CARD: Limpar consultas órfãs -->
+                <a href="limpar_consultas_orfas.php"
+                   class="bg-white p-6 rounded-2xl border border-[#E6D5B8]/40 shadow-sm hover:shadow-lg hover:border-[#8C6D36] transition group">
+                    <div class="flex items-start gap-4">
+                        <div class="w-12 h-12 rounded-2xl bg-[#F9F4EC] border border-[#E6D5B8] flex items-center justify-center text-[#8C6D36] group-hover:bg-[#8C6D36] group-hover:text-white transition shrink-0">
+                            <i class="fa-solid fa-broom text-lg"></i>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h3 class="font-serif text-lg text-[#3E352E] flex items-center justify-between">
+                                Limpar as Consultas Órfãs
+                                <i class="fa-solid fa-arrow-right text-[#C5A059] text-sm opacity-0 group-hover:opacity-100 transition"></i>
+                            </h3>
+                            <p class="text-sm text-stone-500 mt-1">Remove consultas travadas em "Em atendimento" por mais de 2 horas.</p>
+                        </div>
+                    </div>
+                </a>
+                </div>
+
         </section>
 
     </main>
+    <?php include __DIR__ . '/../includes/rodape.php'; ?>
 </body>
 </html>

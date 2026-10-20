@@ -92,19 +92,27 @@ function acessoConsulta($conn, $consultaId) {
     $st->bind_param('i', $consultaId);
     $st->execute();
     $c = $st->get_result()->fetch_assoc();
+
     if (!$c || $c['modalidade'] !== 'Vídeo') return null;
 
     if (souMedico()) {
         $m = medicoAtual($conn);
         if (!$m) return null;
         $mid = (int)$m['id'];
-        if ($c['medico_id'] === null && strcasecmp(trim($c['especialidade']), trim($m['especialidade'])) === 0) {
+
+        // Se a consulta ainda não tem médico e a especialidade bate,
+        // associa agora (fallback para quando o médico abre a página diretamente)
+        if (empty($c['medico_id']) && strcasecmp(trim($c['especialidade']), trim($m['especialidade'])) === 0) {
             $u = $conn->prepare("UPDATE consultas SET medico_id = ? WHERE id = ? AND medico_id IS NULL");
             $u->bind_param('ii', $mid, $consultaId);
             $u->execute();
-            $c['medico_id'] = $mid; $c['medico_nome'] = $m['nome'];
+            $c['medico_id']   = $mid;
+            $c['medico_nome'] = $m['nome'];
         }
-        if ((int)$c['medico_id'] === $mid) return ['consulta' => $c, 'papel' => 'medico'];
+
+        if ((int)$c['medico_id'] === $mid) {
+            return ['consulta' => $c, 'papel' => 'medico'];
+        }
         return null;
     }
 

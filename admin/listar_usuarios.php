@@ -2,21 +2,20 @@
 require_once __DIR__ . '/../bootstrap.php';
 require __DIR__ . '/../conexao.php';
 
+use App\CPF;
+
 // Só o administrador acessa
 if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'admin') {
     header("Location: ../login.php");
     exit;
 }
 
+$nomeAdmin = $_SESSION['nome_usuario'] ?? 'Administrador';
+
 // ---------- Exclusão do usuário (tabela usuarios) ----------
 if (isset($_GET['excluir'])) {
     $id = (int)$_GET['excluir'];
 
-    // Bloqueia se tiver qualquer vínculo clínico:
-    //  - consultas agendadas/realizadas
-    //  - prontuário
-    //  - atendimentos
-    //  - documentos (receitas / atestados)
     $temVinculo = false;
 
     $q = $conn->prepare("SELECT COUNT(*) AS n FROM consultas WHERE usuario_id = ?");
@@ -44,7 +43,6 @@ if (isset($_GET['excluir'])) {
         exit();
     }
 
-    // Sem vínculo: pode excluir. Limpa tokens de recuperação antes.
     $d = $conn->prepare("DELETE FROM tokens_recuperacao WHERE usuario_id = ?");
     $d->bind_param("i", $id); $d->execute();
 
@@ -56,7 +54,7 @@ if (isset($_GET['excluir'])) {
 }
 
 // ---------- Lista de usuários ----------
-$res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM usuarios ORDER BY id DESC");
+$res = $conn->query("SELECT id, nome, nome_mae, email, cpf_ultimos4, telefone, tipo, criado_em FROM usuarios ORDER BY id DESC");
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -77,9 +75,15 @@ $res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM
                     Painel Administrativo
                 </span>
             </div>
-            <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
-                <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
-            </a>
+            <div class="flex items-center space-x-4">
+                <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
+                    <i class="fa-solid fa-arrow-left"></i> <span class="hidden sm:inline">Voltar ao Painel</span>
+                </a>
+                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo htmlspecialchars($nomeAdmin); ?></span>
+                <a href="../logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
+                </a>
+            </div>
         </div>
     </header>
 
@@ -117,6 +121,7 @@ $res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM
                         <tr>
                             <th class="px-4 py-3 text-left">ID</th>
                             <th class="px-4 py-3 text-left">Nome</th>
+                            <th class="px-4 py-3 text-left">Nome da Mãe</th>
                             <th class="px-4 py-3 text-left">E-mail</th>
                             <th class="px-4 py-3 text-left">CPF</th>
                             <th class="px-4 py-3 text-left">Telefone</th>
@@ -130,8 +135,11 @@ $res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM
                                 <tr class="hover:bg-[#FAF9F6]">
                                     <td class="px-4 py-3 font-mono text-xs text-stone-500">#<?php echo (int)$u['id']; ?></td>
                                     <td class="px-4 py-3 font-medium text-stone-800"><?php echo h($u['nome']); ?></td>
+                                    <td class="px-4 py-3 text-stone-600"><?php echo h($u['nome_mae'] ?? '—'); ?></td>
                                     <td class="px-4 py-3 text-stone-600"><?php echo h($u['email'] ?? '—'); ?></td>
-                                    <td class="px-4 py-3 text-stone-600"><?php echo $u['cpf'] ? h(formatarCpf($u['cpf'])) : '—'; ?></td>
+                                    <td class="px-4 py-3 text-stone-600 font-mono text-xs">
+    <?php echo $u['cpf_ultimos4'] ? h(CPF::mascarar($u['cpf_ultimos4'])) : '—'; ?>
+</td>
                                     <td class="px-4 py-3 text-stone-600"><?php echo h($u['telefone'] ?? '—'); ?></td>
                                     <td class="px-4 py-3">
                                         <?php if ($u['tipo'] === 'admin'): ?>
@@ -154,7 +162,7 @@ $res = $conn->query("SELECT id, nome, email, cpf, telefone, tipo, criado_em FROM
                                 </tr>
                             <?php endwhile; ?>
                         <?php else: ?>
-                            <tr><td colspan="7" class="px-4 py-8 text-center text-stone-500">Nenhum usuário cadastrado.</td></tr>
+                            <tr><td colspan="8" class="px-4 py-8 text-center text-stone-500">Nenhum usuário cadastrado.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>

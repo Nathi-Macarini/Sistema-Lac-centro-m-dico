@@ -8,17 +8,26 @@ if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'ad
     exit;
 }
 
+$nomeAdmin = $_SESSION['nome_usuario'] ?? 'Administrador';
+
 $erro = '';
 $sucesso = isset($_GET['sucesso']);
-$especialidades = ['Cardiologia', 'Dermatologia', 'Ortopedia', 'Ginecologia', 'Clínica Geral'];
+$especialidades = ['Cardiologia', 'Dermatologia', 'Ortopedia', 'Ginecologia', 'Pediatria', 'Clínica Geral'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $nome          = trim($_POST['nome'] ?? '');
-    $crm           = trim($_POST['crm'] ?? '');
-    $especialidade = trim($_POST['especialidade'] ?? '');
-    $email         = trim($_POST['email'] ?? '');
-    $telefone      = trim($_POST['telefone'] ?? '');
-    $senha         = trim($_POST['senha'] ?? '');
+    $nome            = trim($_POST['nome'] ?? '');
+    $crm             = trim($_POST['crm'] ?? '');
+    $rqe             = trim($_POST['rqe'] ?? '');
+    $especialidade   = trim($_POST['especialidade'] ?? '');
+    $tipoAtendimento = $_POST['tipo_atendimento'] ?? 'particular';
+    $email           = trim($_POST['email'] ?? '');
+    $telefone        = trim($_POST['telefone'] ?? '');
+    $senha           = trim($_POST['senha'] ?? '');
+
+    // Valida tipo_atendimento
+    if (!in_array($tipoAtendimento, ['particular', 'sus', 'ambos'], true)) {
+        $tipoAtendimento = 'particular';
+    }
 
     if ($nome === '' || $crm === '' || $especialidade === '' || $email === '' || $senha === '') {
         $erro = "Preencha Nome, CRM, Especialidade, E-mail e Senha.";
@@ -34,8 +43,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $erro = "Já existe um médico com esse CRM ou e-mail.";
         } else {
             $hash = password_hash($senha, PASSWORD_DEFAULT);
-            $ins = $conn->prepare("INSERT INTO medicos (nome, crm, especialidade, email, telefone, senha) VALUES (?, ?, ?, ?, ?, ?)");
-            $ins->bind_param("ssssss", $nome, $crm, $especialidade, $email, $telefone, $hash);
+            $ins = $conn->prepare("INSERT INTO medicos (nome, crm, rqe, especialidade, tipo_atendimento, ativo, email, telefone, senha) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)");
+$rqeEsc = $rqe !== '' ? $rqe : null;
+$ins->bind_param("ssssssss", $nome, $crm, $rqeEsc, $especialidade, $tipoAtendimento, $email, $telefone, $hash);
 
             if ($ins->execute()) {
                 header("Location: cadastrar_medico.php?sucesso=1");
@@ -57,7 +67,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body class="bg-[#FAF9F6] text-[#2C2825] font-sans antialiased min-h-screen">
 
-    <!-- Header Admin (igual ao cadastrar_usuario.php) -->
     <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3">
@@ -66,9 +75,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     Painel Administrativo
                 </span>
             </div>
-            <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
-                <i class="fa-solid fa-arrow-left"></i> Voltar ao Painel
-            </a>
+            <div class="flex items-center space-x-4">
+                <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
+                    <i class="fa-solid fa-arrow-left"></i> <span class="hidden sm:inline">Voltar ao Painel</span>
+                </a>
+                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo htmlspecialchars($nomeAdmin); ?></span>
+                <a href="../logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
+                </a>
+            </div>
         </div>
     </header>
 
@@ -102,21 +117,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
                     </div>
 
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">CRM *</label>
-                        <input type="text" name="crm" required placeholder="Ex: 12345/PR" value="<?php echo h($_POST['crm'] ?? ''); ?>"
-                               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
-                    </div>
+                    <!-- Linha 1: CRM + RQE -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div>
+        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">CRM *</label>
+        <input type="text" name="crm" required placeholder="Ex: 12345/PR" value="<?php echo h($_POST['crm'] ?? ''); ?>"
+               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
+    </div>
+    <div>
+        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">RQE</label>
+        <input type="text" name="rqe" placeholder="Ex: 98765" value="<?php echo h($_POST['rqe'] ?? ''); ?>"
+               class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
+    </div>
+</div>
 
-                    <div>
-                        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Especialidade *</label>
-                        <select name="especialidade" required
-                                class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
-                            <?php foreach ($especialidades as $e): ?>
-                                <option value="<?php echo h($e); ?>" <?php echo (($_POST['especialidade'] ?? '') === $e) ? 'selected' : ''; ?>><?php echo h($e); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
+<!-- Linha 2: Especialidade + Tipo de Atendimento -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div>
+        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Especialidade *</label>
+        <select name="especialidade" required class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
+            <?php foreach ($especialidades as $e): ?>
+                <option value="<?php echo h($e); ?>" <?php echo (($_POST['especialidade'] ?? '') === $e) ? 'selected' : ''; ?>>
+                    <?php echo h($e); ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div>
+        <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">Tipo de Atendimento *</label>
+        <select name="tipo_atendimento" required class="w-full border border-stone-300 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-[#8C6D36] bg-[#FAF9F6]">
+            <option value="particular" <?php echo (($_POST['tipo_atendimento'] ?? 'particular') === 'particular') ? 'selected' : ''; ?>>Particular</option>
+            <option value="sus" <?php echo (($_POST['tipo_atendimento'] ?? '') === 'sus') ? 'selected' : ''; ?>>SUS</option>
+            <option value="ambos" <?php echo (($_POST['tipo_atendimento'] ?? '') === 'ambos') ? 'selected' : ''; ?>>Particular + SUS</option>
+        </select>
+    </div>
+</div>
 
                     <div>
                         <label class="block text-xs font-bold text-stone-600 uppercase mb-1.5">E-mail (login) *</label>

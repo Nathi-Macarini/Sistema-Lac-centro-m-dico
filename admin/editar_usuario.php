@@ -2,6 +2,8 @@
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../conexao.php';
 
+use App\CPF;
+
 // ============================================================
 // 1. AUTENTICAÇÃO
 // ============================================================
@@ -10,8 +12,9 @@ if (!isset($_SESSION['usuario_id']) || ($_SESSION['tipo_usuario'] ?? '') !== 'ad
     exit;
 }
 
+$nomeAdmin = $_SESSION['nome_usuario'] ?? 'Administrador';
 // ============================================================
-// 2. PEGA O ID (ANTES DE QUALQUER POST)
+// 2. PEGA O ID
 // ============================================================
 $id = (int)($_GET['id'] ?? 0);
 if ($id <= 0) {
@@ -22,7 +25,7 @@ if ($id <= 0) {
 // ============================================================
 // 3. BUSCA O USUÁRIO
 // ============================================================
-$st = $conn->prepare("SELECT id, nome, email, cpf, telefone, data_nascimento, endereco, tipo FROM usuarios WHERE id = ?");
+$st = $conn->prepare("SELECT id, nome, nome_mae, email, cpf, cpf_enc, cpf_ultimos4, telefone, data_nascimento, endereco, tipo FROM usuarios WHERE id = ?");
 $st->bind_param("i", $id);
 $st->execute();
 $u = $st->get_result()->fetch_assoc();
@@ -30,6 +33,11 @@ $u = $st->get_result()->fetch_assoc();
 if (!$u) {
     header("Location: listar_usuarios.php");
     exit;
+}
+
+// Decifra o CPF para exibição no formulário
+if (empty($u['cpf']) && !empty($u['cpf_enc'])) {
+    $u['cpf'] = CPF::descriptografar($u['cpf_enc']);
 }
 
 // ============================================================
@@ -40,16 +48,15 @@ $avisoRedefinicao = '';
 $avisoPlano = '';
 $avisoDependente = '';
 
-// Controle de admin único
 $qAdmins = $conn->query("SELECT COUNT(*) AS n FROM usuarios WHERE tipo = 'admin'");
 $totalAdmins = (int)$qAdmins->fetch_assoc()['n'];
 $ehUltimoAdmin = ($u['tipo'] === 'admin' && $totalAdmins <= 1);
 
 // ============================================================
-// 5. AÇÃO: REDEFINIR SENHA (HASH BCRYPT)
+// 5. AÇÃO: REDEFINIR SENHA
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefinir_senha') {
-    $cpfLimpo = preg_replace('/\D/', '', (string)$u['cpf']);
+    $cpfLimpo = CPF::limpar((string)$u['cpf']);
 
     if ($cpfLimpo === '') {
         $erro = "Este usuário não tem CPF cadastrado. Não é possível redefinir a senha para o CPF.";
@@ -66,7 +73,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefin
                 if ($up->affected_rows > 0) {
                     $avisoRedefinicao = "Senha redefinida com sucesso. A nova senha é o CPF do usuário (somente números). Oriente-o a trocar no primeiro acesso.";
 
-                    // Log de auditoria
                     if (class_exists('App\\ActivityLogger')) {
                         \App\ActivityLogger::log(
                             action: 'senha_redefinida',
@@ -95,8 +101,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'redefin
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar') {
     $nome     = trim($_POST['nome'] ?? '');
+    $nomeMae  = trim($_POST['nome_mae'] ?? '');
     $email    = trim($_POST['email'] ?? '');
-    $cpf      = preg_replace('/\D/', '', $_POST['cpf'] ?? '');
+    $cpf      = CPF::limpar($_POST['cpf'] ?? '');
     $telefone = trim($_POST['telefone'] ?? '');
     $nasc     = trim($_POST['data_nascimento'] ?? '');
     $endereco = trim($_POST['endereco'] ?? '');
@@ -105,11 +112,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
 
     if ($nome === '') {
         $erro = "O nome é obrigatório.";
-    } elseif ($email === '' && $cpf === '') {
-        $erro = "Informe pelo menos E-mail ou CPF.";
+    } elseif ($nomeMae === '') {
+        $erro = "O nome da mãe é obrigatório.";
+    } elseif ($cpf === '') {
+        $erro = "O CPF é obrigatório.";
+    } elseif (strlen($cpf) !== 11) {
+        $erro = "CPF inválido. Informe os 11 dígitos.";
     } elseif ($ehUltimoAdmin && $tipo !== 'admin') {
         $erro = "Este é o único administrador. Não é possível rebaixá-lo para comum.";
     } else {
+        // Prepara versões seguras do CPF
+        $cpfHash     = CPF::hash($cpf);
+        $cpfUltimos4 = CPF::ultimos4($cpf);
+        $cpfEnc      = CPF::criptografar($cpf);
+
         // Verifica duplicidade
         $dup = false;
         if ($email !== '') {
@@ -118,9 +134,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
             $q->execute();
             if ($q->get_result()->fetch_assoc()) $dup = true;
         }
-        if (!$dup && $cpf !== '') {
-            $q = $conn->prepare("SELECT id FROM usuarios WHERE cpf = ? AND id <> ?");
-            $q->bind_param("si", $cpf, $id);
+        if (!$dup && $cpfHash !== '') {
+            $q = $conn->prepare("SELECT id FROM usuarios WHERE cpf_hash = ? AND id <> ?");
+            $q->bind_param("si", $cpfHash, $id);
             $q->execute();
             if ($q->get_result()->fetch_assoc()) $dup = true;
         }
@@ -129,25 +145,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'salvar'
             $erro = "Já existe outro usuário com esse e-mail ou CPF.";
         } else {
             $emailEsc = $email !== '' ? $email : null;
-            $cpfEsc   = $cpf !== ''   ? $cpf   : null;
             $nascEsc  = $nasc !== ''  ? $nasc  : null;
 
             $up = $conn->prepare("UPDATE usuarios
-                SET nome = ?, email = ?, cpf = ?, telefone = ?, data_nascimento = ?, endereco = ?, tipo = ?
+                SET nome = ?, nome_mae = ?, email = ?, cpf = ?, cpf_hash = ?, cpf_ultimos4 = ?, cpf_enc = ?,
+                    telefone = ?, data_nascimento = ?, endereco = ?, tipo = ?
                 WHERE id = ?");
-            $up->bind_param("sssssssi", $nome, $emailEsc, $cpfEsc, $telefone, $nascEsc, $endereco, $tipo, $id);
+            $up->bind_param(
+                "sssssssssssi",
+                $nome, $nomeMae, $emailEsc, $cpf, $cpfHash, $cpfUltimos4, $cpfEnc,
+                $telefone, $nascEsc, $endereco, $tipo, $id
+            );
 
             if ($up->execute()) {
-                header("Location: listar_usuarios.php?editado=1");
+                header("Location: editar_usuario.php?id={$id}&editado=1");
                 exit;
             }
             $erro = "Erro ao salvar: " . $up->error;
         }
     }
 
-    // Atualiza dados na tela em caso de erro
+    // Atualiza os dados na tela em caso de erro
     $u = [
-        'id' => $id, 'nome' => $nome, 'email' => $email, 'cpf' => $cpf,
+        'id' => $id, 'nome' => $nome, 'nome_mae' => $nomeMae, 'email' => $email, 'cpf' => $cpf,
         'telefone' => $telefone, 'data_nascimento' => $nasc,
         'endereco' => $endereco, 'tipo' => $tipo,
     ];
@@ -202,7 +222,7 @@ if (isset($_GET['plano_removido'])) $avisoPlano = "Plano removido.";
 // ============================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_dependente') {
     $nomeDep    = trim($_POST['dep_nome'] ?? '');
-    $cpfDep     = preg_replace('/\D/', '', $_POST['dep_cpf'] ?? '');
+    $cpfDep     = CPF::limpar($_POST['dep_cpf'] ?? '');
     $nascDep    = trim($_POST['dep_nascimento'] ?? '');
     $parentesco = trim($_POST['dep_parentesco'] ?? '');
 
@@ -210,9 +230,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'add_dep
         $erro = "Preencha o nome e o parentesco do dependente.";
     } else {
         $cpfDepEsc  = $cpfDep !== '' ? $cpfDep : null;
+        $cpfDepHash = $cpfDep !== '' ? CPF::hash($cpfDep) : null;
+        $cpfDepU4   = $cpfDep !== '' ? CPF::ultimos4($cpfDep) : null;
+        $cpfDepEnc  = $cpfDep !== '' ? CPF::criptografar($cpfDep) : null;
         $nascDepEsc = $nascDep !== '' ? $nascDep : null;
-        $ins = $conn->prepare("INSERT INTO dependentes (titular_id, nome, cpf, data_nascimento, parentesco) VALUES (?, ?, ?, ?, ?)");
-        $ins->bind_param("issss", $id, $nomeDep, $cpfDepEsc, $nascDepEsc, $parentesco);
+
+        $ins = $conn->prepare("
+            INSERT INTO dependentes (titular_id, nome, cpf, cpf_hash, cpf_ultimos4, cpf_enc, data_nascimento, parentesco)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $ins->bind_param(
+            "isssssss",
+            $id, $nomeDep, $cpfDepEsc, $cpfDepHash, $cpfDepU4, $cpfDepEnc, $nascDepEsc, $parentesco
+        );
+
         if ($ins->execute()) {
             $avisoDependente = "Dependente cadastrado com sucesso.";
         } else {
@@ -235,14 +266,14 @@ if (isset($_GET['remover_dependente'])) {
 if (isset($_GET['dep_removido'])) $avisoDependente = "Dependente removido.";
 
 // ============================================================
-// 11. BUSCA PLANOS E DEPENDENTES PARA A TELA
+// 11. BUSCA PLANOS E DEPENDENTES
 // ============================================================
 $planosStmt = $conn->prepare("SELECT * FROM planos WHERE usuario_id = ? ORDER BY criado_em DESC");
 $planosStmt->bind_param("i", $id);
 $planosStmt->execute();
 $planos = $planosStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
-$depsStmt = $conn->prepare("SELECT * FROM dependentes WHERE titular_id = ? ORDER BY nome ASC");
+$depsStmt = $conn->prepare("SELECT id, titular_id, nome, cpf_ultimos4, data_nascimento, parentesco FROM dependentes WHERE titular_id = ? ORDER BY nome ASC");
 $depsStmt->bind_param("i", $id);
 $depsStmt->execute();
 $dependentes = $depsStmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -267,22 +298,26 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
     <header class="bg-white border-b border-[#E6D5B8]/40 sticky top-0 z-50 shadow-sm">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3">
-                <img src="../logo_lac.png" alt="LAC" class="h-10 w-auto object-contain">
+                <img src="../logo_lac.png" alt="LAC Centro Médico" class="h-10 w-auto object-contain">
                 <span class="hidden sm:inline text-xs font-bold text-[#8C6D36] bg-[#F9F4EC] border border-[#E6D5B8] px-2.5 py-1 rounded-full uppercase tracking-wider">
-                    Área do Administrador
+                    Painel Administrativo
                 </span>
             </div>
-            <a href="listar_usuarios.php" class="text-xs text-stone-600 hover:text-[#8C6D36] font-medium transition flex items-center">
-                <i class="fa-solid fa-arrow-left mr-1"></i> Voltar à lista
-            </a>
+            <div class="flex items-center space-x-4">
+                <a href="dashboard.php" class="text-sm font-medium text-stone-700 hover:text-[#8C6D36] transition">
+                    <i class="fa-solid fa-arrow-left"></i> <span class="hidden sm:inline">Voltar ao Painel</span>
+                </a>
+                <span class="text-sm font-medium text-stone-700 hidden sm:inline"><?php echo htmlspecialchars($nomeAdmin); ?></span>
+                <a href="../logout.php" class="text-stone-400 hover:text-amber-700 transition" title="Sair">
+                    <i class="fa-solid fa-right-from-bracket text-lg"></i>
+                </a>
+            </div>
         </div>
     </header>
 
     <main class="max-w-3xl mx-auto px-4 py-8 space-y-6">
 
-        <!-- ============================================================ -->
-        <!-- BLOCO 1: DADOS BÁSICOS                                        -->
-        <!-- ============================================================ -->
+        <!-- BLOCO 1: DADOS BÁSICOS -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">
                 <div>
@@ -290,6 +325,13 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                     <p class="text-xs text-stone-500 mt-0.5">#<?php echo (int)$u['id']; ?> · ajuste os dados cadastrais</p>
                 </div>
             </div>
+
+            <?php if (isset($_GET['editado'])): ?>
+                <div class="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-sm flex items-start gap-2">
+                    <i class="fa-solid fa-circle-check mt-0.5"></i>
+                    <span>Dados do usuário atualizados com sucesso.</span>
+                </div>
+            <?php endif; ?>
 
             <?php if ($erro !== ''): ?>
                 <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
@@ -301,18 +343,26 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 <input type="hidden" name="acao" value="salvar">
 
                 <div>
-                    <label class="<?php echo $rotulo; ?>">Nome completo</label>
+                    <label class="<?php echo $rotulo; ?>">Nome completo *</label>
                     <input type="text" name="nome" required value="<?php echo h($u['nome']); ?>" class="<?php echo $campo; ?>">
+                </div>
+
+                <div>
+                    <label class="<?php echo $rotulo; ?>">Nome da Mãe *</label>
+                    <input type="text" name="nome_mae" required
+                           value="<?php echo h($u['nome_mae'] ?? ''); ?>"
+                           class="<?php echo $campo; ?>"
+                           placeholder="Nome completo da mãe do paciente">
                 </div>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label class="<?php echo $rotulo; ?>">E-mail (login)</label>
-                        <input type="email" name="email" value="<?php echo h($u['email'] ?? ''); ?>" class="<?php echo $campo; ?>">
+                        <label class="<?php echo $rotulo; ?>">CPF *</label>
+                        <input type="text" name="cpf" maxlength="14" required value="<?php echo h($u['cpf'] ?? ''); ?>" class="<?php echo $campo; ?>" placeholder="000.000.000-00">
                     </div>
                     <div>
-                        <label class="<?php echo $rotulo; ?>">CPF</label>
-                        <input type="text" name="cpf" maxlength="14" value="<?php echo h($u['cpf'] ?? ''); ?>" class="<?php echo $campo; ?>" placeholder="000.000.000-00">
+                        <label class="<?php echo $rotulo; ?>">E-mail (login)</label>
+                        <input type="email" name="email" value="<?php echo h($u['email'] ?? ''); ?>" class="<?php echo $campo; ?>">
                     </div>
                 </div>
 
@@ -346,8 +396,8 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 </div>
 
                 <div class="bg-[#F9F4EC] border border-[#E6D5B8] p-3.5 rounded-xl text-xs text-[#5A4A3A] flex items-start gap-2">
-                    <i class="fa-solid fa-circle-info mt-0.5"></i>
-                    <span><strong>E-mail e CPF</strong> são usados para login. Alterar pode exigir que o usuário reaprenda as credenciais.</span>
+                    <i class="fa-solid fa-shield-halved mt-0.5"></i>
+                    <span><strong>LGPD:</strong> O CPF é armazenado de forma criptografada. Alterar o CPF atualiza também o hash e os últimos 4 dígitos.</span>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-2">
@@ -359,16 +409,14 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
             </form>
         </section>
 
-        <!-- ============================================================ -->
-        <!-- BLOCO 2: REDEFINIR SENHA                                      -->
-        <!-- ============================================================ -->
+        <!-- BLOCO 2: REDEFINIR SENHA -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-4">
             <div>
                 <h2 class="text-lg font-serif text-[#3E352E]">
                     <i class="fa-solid fa-key text-[#8C6D36] mr-1"></i> Redefinir senha do usuário
                 </h2>
                 <p class="text-sm text-stone-500 mt-1">
-                    Volta a senha do usuário para o <strong>CPF dele (somente números)</strong>. A senha é armazenada de forma criptografada.
+                    Volta a senha do usuário para o <strong>CPF dele (somente números)</strong>.
                 </p>
             </div>
 
@@ -379,9 +427,9 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 </div>
             <?php endif; ?>
 
-            <?php if ($u['cpf']): ?>
+            <?php if (!empty($u['cpf'])): ?>
                 <div class="text-xs text-stone-500 bg-[#FAF9F6] border border-stone-200 rounded-xl p-3">
-                    Nova senha: <strong class="font-mono"><?php echo h(preg_replace('/\D/', '', $u['cpf'])); ?></strong>
+                    Nova senha: <strong class="font-mono"><?php echo h(CPF::limpar($u['cpf'])); ?></strong>
                 </div>
                 <form method="POST" onsubmit="return confirm('Redefinir a senha deste usuário para o CPF dele?');">
                     <input type="hidden" name="acao" value="redefinir_senha">
@@ -396,9 +444,7 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
             <?php endif; ?>
         </section>
 
-        <!-- ============================================================ -->
-        <!-- BLOCO 3: PLANO DE SAÚDE                                       -->
-        <!-- ============================================================ -->
+        <!-- BLOCO 3: PLANO DE SAÚDE -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">
                 <div>
@@ -474,9 +520,7 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
             </form>
         </section>
 
-        <!-- ============================================================ -->
-        <!-- BLOCO 4: DEPENDENTES                                          -->
-        <!-- ============================================================ -->
+        <!-- BLOCO 4: DEPENDENTES -->
         <section class="bg-white p-8 rounded-2xl border border-[#E6D5B8]/40 shadow-sm space-y-6">
             <div class="flex items-center justify-between border-b border-stone-200 pb-4">
                 <div>
@@ -501,7 +545,9 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                                 </div>
                                 <div class="text-xs text-stone-500">
                                     <?php echo $d['data_nascimento'] ? date('d/m/Y', strtotime($d['data_nascimento'])) : 'sem nascimento'; ?>
-                                    <?php if ($d['cpf']): ?> · CPF <?php echo h(formatarCpf($d['cpf'])); ?><?php endif; ?>
+                                    <?php if (!empty($d['cpf_ultimos4'])): ?>
+                                        · CPF <?php echo h(CPF::mascarar($d['cpf_ultimos4'])); ?>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                             <a href="editar_usuario.php?id=<?php echo $id; ?>&remover_dependente=<?php echo (int)$d['id']; ?>"
@@ -549,7 +595,6 @@ $rotulo = 'block text-xs font-bold text-stone-600 uppercase tracking-wider mb-1'
                 </div>
             </form>
         </section>
-
     </main>
 </body>
 </html>

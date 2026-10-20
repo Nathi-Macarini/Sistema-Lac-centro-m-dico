@@ -1,1 +1,14 @@
-.vercel
+# Variáveis de ambiente
+.env
+.env.local
+.env.production
+
+# Storage (arquivos gerados)
+storage/exportacoes/*.csv
+storage/.last_check_export
+
+# Vendor (se não estiver no git)
+# /vendor
+
+# Cache / logs
+*.log

@@ -36,7 +36,8 @@ function idadeDe($data) {
             <a href="index.php" class="hover:text-[#8C6D36] transition">Início</a>
             <a href="historico.php" class="hover:text-[#8C6D36] transition">Histórico</a>
             <a href="plano.php" class="hover:text-[#8C6D36] transition">Plano</a>
-            <a href="dependentes.php" class="text-[#8C6D36] border-b-2 border-[#8C6D36] pb-1 font-semibold">Dependentes</a>
+            <a href="dependentes.php" class="hover:text-[#8C6D36] transition">Dependentes</a>
+<a href="privacidade.php" class="hover:text-[#8C6D36] transition">Privacidade</a>
         </nav>
         <div class="flex items-center space-x-4">
             <?php if ($tipoUsuario === 'admin'): ?>
